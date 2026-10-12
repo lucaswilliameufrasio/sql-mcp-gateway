@@ -1,0 +1,52 @@
+services:
+  vault:
+    image: hashicorp/vault:1.21.4
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:?integration script must generate a local test token}
+      VAULT_ADDR: http://127.0.0.1:8200
+    ports:
+      - "127.0.0.1::8200"
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: sql_mcp_gateway_it
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?integration script must generate a local test password}
+      POSTGRES_USER: postgres
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - ${INTEGRATION_TLS_DIR:?integration script must generate local TLS material}:/certs:ro
+      - ./scripts/postgres-integration-init.sh:/docker-entrypoint-initdb.d/10-enable-tls.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sql_mcp_gateway_it"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4.7
+    command:
+      - --require-secure-transport=ON
+      - --ssl-ca=/certs/ca.crt
+      - --ssl-cert=/certs/server.crt
+      - --ssl-key=/certs/server.key
+    environment:
+      MYSQL_DATABASE: sql_mcp_gateway_it
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?integration script must generate a local test password}
+    ports:
+      - "127.0.0.1::3306"
+    volumes:
+      - ${INTEGRATION_TLS_DIR:?integration script must generate local TLS material}:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping --host=127.0.0.1 --user=root --silent"]
+      interval: 3s
+      timeout: 2s
+      retries: 40

@@ -1,0 +1,30 @@
+{
+  "name": "sql-mcp-gateway-admin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@sveltejs/adapter-node": "^5.5.0",
+    "@sveltejs/kit": "^2.45.0",
+    "oidc-client-ts": "^3.3.0",
+    "svelte": "^5.40.0",
+    "vite": "^7.1.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6.2.0",
+    "prettier": "^3.6.0",
+    "prettier-plugin-svelte": "^3.4.0",
+    "svelte-check": "^4.3.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
