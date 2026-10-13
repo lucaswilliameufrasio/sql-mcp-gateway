@@ -10,12 +10,12 @@ terraform {
 }
 
 provider "aws" {
-  region = var.aws_region
+  region = local.aws_region
 
   default_tags {
     tags = {
       Application = "sql-mcp-gateway"
-      Environment = var.environment
+      Environment = local.environment
       ManagedBy   = "OpenTofu"
     }
   }
@@ -24,17 +24,17 @@ provider "aws" {
 data "aws_partition" "current" {}
 
 resource "aws_cloudwatch_log_group" "lambda" {
-  name              = "/aws/lambda/${var.name}"
-  retention_in_days = var.log_retention_in_days
+  name              = "/aws/lambda/${local.name}"
+  retention_in_days = local.log_retention_in_days
 }
 
 resource "aws_cloudwatch_log_group" "api_access" {
-  name              = "/aws/apigateway/${var.name}/access"
-  retention_in_days = var.log_retention_in_days
+  name              = "/aws/apigateway/${local.name}/access"
+  retention_in_days = local.log_retention_in_days
 }
 
 resource "aws_iam_role" "lambda" {
-  name = "${var.name}-execution"
+  name = "${local.name}-execution"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -54,7 +54,7 @@ resource "aws_iam_role_policy_attachment" "lambda_vpc" {
 }
 
 resource "aws_iam_role_policy" "read_secrets" {
-  name = "${var.name}-read-runtime-secrets"
+  name = "${local.name}-read-runtime-secrets"
   role = aws_iam_role.lambda.id
 
   policy = jsonencode({
@@ -63,17 +63,17 @@ resource "aws_iam_role_policy" "read_secrets" {
       Effect = "Allow"
       Action = ["secretsmanager:GetSecretValue"]
       Resource = [
-        var.control_database_url_secret_arn,
-        var.vault_credentials_secret_arn,
+        local.control_database_url_secret_arn,
+        local.vault_credentials_secret_arn,
       ]
     }]
   })
 }
 
 resource "aws_iam_role_policy" "decrypt_secrets" {
-  count = length(var.secret_kms_key_arns) > 0 ? 1 : 0
+  count = length(local.secret_kms_key_arns) > 0 ? 1 : 0
 
-  name = "${var.name}-decrypt-runtime-secrets"
+  name = "${local.name}-decrypt-runtime-secrets"
   role = aws_iam_role.lambda.id
 
   policy = jsonencode({
@@ -81,29 +81,29 @@ resource "aws_iam_role_policy" "decrypt_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["kms:Decrypt"]
-      Resource = var.secret_kms_key_arns
+      Resource = local.secret_kms_key_arns
     }]
   })
 }
 
 resource "aws_lambda_function" "gateway" {
-  function_name = var.name
+  function_name = local.name
   package_type  = "Image"
-  image_uri     = var.lambda_image_uri
+  image_uri     = local.lambda_image_uri
   role          = aws_iam_role.lambda.arn
   architectures = ["x86_64"]
-  memory_size   = var.lambda_memory_mb
-  timeout       = var.lambda_timeout_seconds
+  memory_size   = local.lambda_memory_mb
+  timeout       = local.lambda_timeout_seconds
 
-  reserved_concurrent_executions = var.reserved_concurrent_executions
+  reserved_concurrent_executions = local.reserved_concurrent_executions
 
   ephemeral_storage {
     size = 512
   }
 
   vpc_config {
-    subnet_ids         = var.private_subnet_ids
-    security_group_ids = var.lambda_security_group_ids
+    subnet_ids         = local.private_subnet_ids
+    security_group_ids = local.lambda_security_group_ids
   }
 
   environment {
@@ -114,15 +114,57 @@ resource "aws_lambda_function" "gateway" {
       AWS_LWA_READINESS_CHECK_PATH            = "/health"
       AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS = "20"
       AWS_LWA_ASYNC_INIT                      = "true"
-      CONTROL_DATABASE_URL_SECRET_ARN         = var.control_database_url_secret_arn
-      VAULT_CREDENTIALS_SECRET_ARN            = var.vault_credentials_secret_arn
-      OIDC_ISSUER_URL                         = var.oidc_issuer_url
-      OIDC_CLIENT_ID                          = var.oidc_client_id
-      OIDC_ACCESS_TOKEN_AUDIENCE              = var.oidc_access_token_audience
-      OIDC_BOOTSTRAP_ADMIN_SUBJECTS           = join(",", var.oidc_bootstrap_admin_subjects)
-      VAULT_ADDRESS                           = var.vault_address
-      MAX_QUERY_ROWS                          = tostring(var.max_query_rows)
-      MAX_QUERY_DURATION_SECONDS              = tostring(var.max_query_duration_seconds)
+      CONTROL_DATABASE_URL_SECRET_ARN         = local.control_database_url_secret_arn
+      VAULT_CREDENTIALS_SECRET_ARN            = local.vault_credentials_secret_arn
+      OIDC_ISSUER_URL                          = local.oidc_issuer_url
+      OIDC_CLIENT_ID                           = local.oidc_client_id
+      OIDC_ACCESS_TOKEN_AUDIENCE               = local.oidc_access_token_audience
+      OIDC_BOOTSTRAP_ADMIN_SUBJECTS            = join(",", local.oidc_bootstrap_admin_subjects)
+      VAULT_ADDRESS                            = local.vault_address
+      MAX_QUERY_ROWS                           = tostring(local.max_query_rows)
+      MAX_QUERY_DURATION_SECONDS               = tostring(local.max_query_duration_seconds)
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = can(regex("^[A-Za-z0-9_-]{3,32}$", local.name))
+      error_message = "name must be 3-32 letters, digits, hyphens, or underscores."
+    }
+
+    precondition {
+      condition     = length(local.private_subnet_ids) >= 2 && length(local.lambda_security_group_ids) > 0
+      error_message = "Provide at least two private subnets and one Lambda security group."
+    }
+
+    precondition {
+      condition     = length(local.oidc_bootstrap_admin_subjects) > 0
+      error_message = "Provide at least one exact OIDC subject for initial administration."
+    }
+
+    precondition {
+      condition     = local.max_query_rows >= 1 && local.max_query_rows <= 1000
+      error_message = "max_query_rows must be between 1 and 1000."
+    }
+
+    precondition {
+      condition     = local.max_query_duration_seconds >= 1 && local.max_query_duration_seconds <= 300
+      error_message = "max_query_duration_seconds must be between 1 and 300."
+    }
+
+    precondition {
+      condition     = local.lambda_memory_mb >= 128 && local.lambda_memory_mb <= 10240
+      error_message = "lambda_memory_mb must be between 128 and 10240."
+    }
+
+    precondition {
+      condition     = local.lambda_timeout_seconds >= 1 && local.lambda_timeout_seconds <= 29
+      error_message = "lambda_timeout_seconds must be between 1 and 29 for this API Gateway example."
+    }
+
+    precondition {
+      condition     = local.reserved_concurrent_executions >= 1
+      error_message = "reserved_concurrent_executions must be at least 1."
     }
   }
 
@@ -137,7 +179,7 @@ resource "aws_lambda_function" "gateway" {
 # The VPC access policy is needed by the Lambda service to manage Hyperplane
 # ENIs. This condition denies the gateway process itself those EC2 API actions.
 resource "aws_iam_role_policy" "deny_runtime_eni_management" {
-  name = "${var.name}-deny-runtime-eni-management"
+  name = "${local.name}-deny-runtime-eni-management"
   role = aws_iam_role.lambda.id
 
   policy = jsonencode({
@@ -172,11 +214,11 @@ resource "aws_lambda_permission" "api_gateway" {
 }
 
 resource "aws_api_gateway_rest_api" "private" {
-  name = "${var.name}-private"
+  name = "${local.name}-private"
 
   endpoint_configuration {
     types            = ["PRIVATE"]
-    vpc_endpoint_ids = [var.execute_api_vpc_endpoint_id]
+    vpc_endpoint_ids = [local.execute_api_vpc_endpoint_id]
   }
 
   policy = jsonencode({
@@ -188,7 +230,7 @@ resource "aws_api_gateway_rest_api" "private" {
       Resource  = "execute-api:/*"
       Condition = {
         StringEquals = {
-          "aws:SourceVpce" = var.execute_api_vpc_endpoint_id
+          "aws:SourceVpce" = local.execute_api_vpc_endpoint_id
         }
       }
     }]
@@ -225,7 +267,7 @@ resource "aws_api_gateway_integration" "root" {
   http_method             = aws_api_gateway_method.root.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${aws_lambda_function.gateway.invoke_arn}/invocations"
+  uri                     = "arn:${data.aws_partition.current.partition}:apigateway:${local.aws_region}:lambda:path/2015-03-31/functions/${aws_lambda_function.gateway.invoke_arn}/invocations"
   timeout_milliseconds    = 29000
 }
 
@@ -235,7 +277,7 @@ resource "aws_api_gateway_integration" "proxy" {
   http_method             = aws_api_gateway_method.proxy.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = "arn:${data.aws_partition.current.partition}:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${aws_lambda_function.gateway.invoke_arn}/invocations"
+  uri                     = "arn:${data.aws_partition.current.partition}:apigateway:${local.aws_region}:lambda:path/2015-03-31/functions/${aws_lambda_function.gateway.invoke_arn}/invocations"
   timeout_milliseconds    = 29000
 }
 
@@ -276,7 +318,7 @@ resource "aws_api_gateway_deployment" "private" {
 resource "aws_api_gateway_stage" "private" {
   rest_api_id   = aws_api_gateway_rest_api.private.id
   deployment_id = aws_api_gateway_deployment.private.id
-  stage_name    = var.api_stage_name
+  stage_name    = local.api_stage_name
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access.arn
@@ -306,7 +348,7 @@ resource "aws_api_gateway_method_settings" "all" {
     metrics_enabled        = true
     logging_level          = "INFO"
     data_trace_enabled     = false
-    throttling_rate_limit  = var.api_rate_limit_per_second
-    throttling_burst_limit = var.api_burst_limit
+    throttling_rate_limit  = local.api_rate_limit_per_second
+    throttling_burst_limit = local.api_burst_limit
   }
 }

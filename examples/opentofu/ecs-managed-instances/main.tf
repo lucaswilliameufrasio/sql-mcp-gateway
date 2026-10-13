@@ -10,12 +10,12 @@ terraform {
 }
 
 provider "aws" {
-  region = var.aws_region
+  region = local.aws_region
 
   default_tags {
     tags = {
       Application = "sql-mcp-gateway"
-      Environment = var.environment
+      Environment = local.environment
       ManagedBy   = "OpenTofu"
     }
   }
@@ -25,14 +25,14 @@ data "aws_partition" "current" {}
 
 locals {
   required_secret_arns = [
-    var.control_database_url_secret_arn,
-    var.vault_admin_token_secret_arn,
-    var.vault_runtime_token_secret_arn,
+    local.control_database_url_secret_arn,
+    local.vault_admin_token_secret_arn,
+    local.vault_runtime_token_secret_arn,
   ]
 }
 
 resource "aws_ecs_cluster" "gateway" {
-  name = var.name
+  name = local.name
 
   setting {
     name  = "containerInsights"
@@ -41,7 +41,7 @@ resource "aws_ecs_cluster" "gateway" {
 }
 
 resource "aws_iam_role" "infrastructure" {
-  name = "${var.name}-mi-infrastructure"
+  name = "${local.name}-mi-infrastructure"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -61,7 +61,7 @@ resource "aws_iam_role_policy_attachment" "infrastructure" {
 }
 
 resource "aws_iam_role" "instance" {
-  name = "ecsInstanceRole-${var.name}"
+  name = "ecsInstanceRole-${local.name}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -81,12 +81,12 @@ resource "aws_iam_role_policy_attachment" "instance" {
 }
 
 resource "aws_iam_instance_profile" "instance" {
-  name = "${var.name}-mi-instance-profile"
+  name = "${local.name}-mi-instance-profile"
   role = aws_iam_role.instance.name
 }
 
 resource "aws_iam_role" "task_execution" {
-  name = "${var.name}-task-execution"
+  name = "${local.name}-task-execution"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -106,7 +106,7 @@ resource "aws_iam_role_policy_attachment" "task_execution" {
 }
 
 resource "aws_iam_role_policy" "read_secrets" {
-  name = "${var.name}-read-task-secrets"
+  name = "${local.name}-read-task-secrets"
   role = aws_iam_role.task_execution.id
 
   policy = jsonencode({
@@ -120,9 +120,9 @@ resource "aws_iam_role_policy" "read_secrets" {
 }
 
 resource "aws_iam_role_policy" "decrypt_secrets" {
-  count = length(var.secret_kms_key_arns) > 0 ? 1 : 0
+  count = length(local.secret_kms_key_arns) > 0 ? 1 : 0
 
-  name = "${var.name}-decrypt-task-secrets"
+  name = "${local.name}-decrypt-task-secrets"
   role = aws_iam_role.task_execution.id
 
   policy = jsonencode({
@@ -130,13 +130,13 @@ resource "aws_iam_role_policy" "decrypt_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["kms:Decrypt"]
-      Resource = var.secret_kms_key_arns
+      Resource = local.secret_kms_key_arns
     }]
   })
 }
 
 resource "aws_iam_role" "task" {
-  name = "${var.name}-task"
+  name = "${local.name}-task"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -151,12 +151,12 @@ resource "aws_iam_role" "task" {
 }
 
 resource "aws_cloudwatch_log_group" "gateway" {
-  name              = "/ecs/${var.name}/gateway"
-  retention_in_days = var.log_retention_in_days
+  name              = "/ecs/${local.name}/gateway"
+  retention_in_days = local.log_retention_in_days
 }
 
 resource "aws_ecs_capacity_provider" "managed_instances" {
-  name    = "${var.name}-managed-instances"
+  name    = "${local.name}-managed-instances"
   cluster = aws_ecs_cluster.gateway.name
 
   managed_instances_provider {
@@ -169,12 +169,12 @@ resource "aws_ecs_capacity_provider" "managed_instances" {
       monitoring               = "DETAILED"
 
       network_configuration {
-        subnets         = var.private_subnet_ids
-        security_groups = var.managed_instance_security_group_ids
+        subnets         = local.private_subnet_ids
+        security_groups = local.managed_instance_security_group_ids
       }
 
       storage_configuration {
-        storage_size_gib = var.instance_storage_size_gib
+        storage_size_gib = local.instance_storage_size_gib
       }
 
       instance_requirements {
@@ -210,22 +210,22 @@ resource "aws_ecs_cluster_capacity_providers" "gateway" {
 }
 
 resource "aws_ecs_task_definition" "gateway" {
-  family                   = var.name
+  family                   = local.name
   network_mode             = "awsvpc"
   requires_compatibilities = ["MANAGED_INSTANCES"]
-  cpu                      = tostring(var.task_cpu)
-  memory                   = tostring(var.task_memory_mib)
+  cpu                      = tostring(local.task_cpu)
+  memory                   = tostring(local.task_memory_mib)
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = var.cpu_architecture
+    cpu_architecture        = local.cpu_architecture
   }
 
   container_definitions = jsonencode([{
     name        = "sql-mcp-gateway"
-    image       = var.image_uri
+    image       = local.image_uri
     essential   = true
     user        = "10001"
     stopTimeout = 60
@@ -237,26 +237,26 @@ resource "aws_ecs_task_definition" "gateway" {
 
     environment = [
       { name = "BIND_ADDRESS", value = "0.0.0.0:8080" },
-      { name = "OIDC_ISSUER_URL", value = var.oidc_issuer_url },
-      { name = "OIDC_CLIENT_ID", value = var.oidc_client_id },
-      { name = "OIDC_ACCESS_TOKEN_AUDIENCE", value = var.oidc_access_token_audience },
-      { name = "OIDC_BOOTSTRAP_ADMIN_SUBJECTS", value = join(",", var.oidc_bootstrap_admin_subjects) },
-      { name = "VAULT_ADDRESS", value = var.vault_address },
-      { name = "MAX_QUERY_ROWS", value = tostring(var.max_query_rows) },
-      { name = "MAX_QUERY_DURATION_SECONDS", value = tostring(var.max_query_duration_seconds) },
+      { name = "OIDC_ISSUER_URL", value = local.oidc_issuer_url },
+      { name = "OIDC_CLIENT_ID", value = local.oidc_client_id },
+      { name = "OIDC_ACCESS_TOKEN_AUDIENCE", value = local.oidc_access_token_audience },
+      { name = "OIDC_BOOTSTRAP_ADMIN_SUBJECTS", value = join(",", local.oidc_bootstrap_admin_subjects) },
+      { name = "VAULT_ADDRESS", value = local.vault_address },
+      { name = "MAX_QUERY_ROWS", value = tostring(local.max_query_rows) },
+      { name = "MAX_QUERY_DURATION_SECONDS", value = tostring(local.max_query_duration_seconds) },
     ]
 
     secrets = [
-      { name = "CONTROL_DATABASE_URL", valueFrom = var.control_database_url_secret_arn },
-      { name = "VAULT_ADMIN_TOKEN", valueFrom = var.vault_admin_token_secret_arn },
-      { name = "VAULT_RUNTIME_TOKEN", valueFrom = var.vault_runtime_token_secret_arn },
+      { name = "CONTROL_DATABASE_URL", valueFrom = local.control_database_url_secret_arn },
+      { name = "VAULT_ADMIN_TOKEN", valueFrom = local.vault_admin_token_secret_arn },
+      { name = "VAULT_RUNTIME_TOKEN", valueFrom = local.vault_runtime_token_secret_arn },
     ]
 
     logConfiguration = {
       logDriver = "awslogs"
       options = {
         awslogs-group         = aws_cloudwatch_log_group.gateway.name
-        awslogs-region        = var.aws_region
+        awslogs-region        = local.aws_region
         awslogs-stream-prefix = "gateway"
       }
     }
@@ -271,10 +271,10 @@ resource "aws_ecs_task_definition" "gateway" {
 }
 
 resource "aws_ecs_service" "gateway" {
-  name                               = "${var.name}-gateway"
+  name                               = "${local.name}-gateway"
   cluster                            = aws_ecs_cluster.gateway.id
   task_definition                    = aws_ecs_task_definition.gateway.arn
-  desired_count                      = var.desired_count
+  desired_count                      = local.desired_count
   health_check_grace_period_seconds  = 90
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
@@ -290,13 +290,13 @@ resource "aws_ecs_service" "gateway" {
   }
 
   network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = var.task_security_group_ids
+    subnets          = local.private_subnet_ids
+    security_groups  = local.task_security_group_ids
     assign_public_ip = false
   }
 
   load_balancer {
-    target_group_arn = var.private_alb_target_group_arn
+    target_group_arn = local.private_alb_target_group_arn
     container_name   = "sql-mcp-gateway"
     container_port   = 8080
   }
@@ -304,6 +304,51 @@ resource "aws_ecs_service" "gateway" {
   ordered_placement_strategy {
     type  = "spread"
     field = "attribute:ecs.availability-zone"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = can(regex("^[A-Za-z0-9_-]{3,32}$", local.name))
+      error_message = "name must be 3-32 letters, digits, hyphens, or underscores."
+    }
+
+    precondition {
+      condition     = length(local.private_subnet_ids) >= 2
+      error_message = "Provide private subnets in at least two Availability Zones."
+    }
+
+    precondition {
+      condition = (
+        length(local.managed_instance_security_group_ids) > 0 &&
+        length(local.task_security_group_ids) > 0
+      )
+      error_message = "Provide managed-instance and task security groups."
+    }
+
+    precondition {
+      condition     = length(local.oidc_bootstrap_admin_subjects) > 0
+      error_message = "Provide at least one exact OIDC subject for initial administration."
+    }
+
+    precondition {
+      condition     = local.max_query_rows >= 1 && local.max_query_rows <= 1000
+      error_message = "max_query_rows must be between 1 and 1000."
+    }
+
+    precondition {
+      condition     = local.max_query_duration_seconds >= 1 && local.max_query_duration_seconds <= 300
+      error_message = "max_query_duration_seconds must be between 1 and 300."
+    }
+
+    precondition {
+      condition     = contains(["X86_64", "ARM64"], local.cpu_architecture)
+      error_message = "cpu_architecture must be X86_64 or ARM64 and match the published image."
+    }
+
+    precondition {
+      condition     = local.desired_count >= 1
+      error_message = "desired_count must be at least 1."
+    }
   }
 
   depends_on = [aws_ecs_cluster_capacity_providers.gateway]

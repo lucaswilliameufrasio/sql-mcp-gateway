@@ -4,16 +4,14 @@ migrate-create:
 	@if [ -z "$(name)" ]; then echo "Usage: make migrate-create name=add_table"; exit 1; fi
 	sqlx migrate add -r "$(name)" --source crates/gateway/migrations
 
+# SQLx CLI reads DATABASE_URL from the root .env file when it is not exported.
 migrate-up:
-	@if [ -z "$${DATABASE_URL:-}" ]; then echo "DATABASE_URL must target the control-plane PostgreSQL database"; exit 1; fi
 	sqlx migrate run --source crates/gateway/migrations
 
 migrate-down:
-	@if [ -z "$${DATABASE_URL:-}" ]; then echo "DATABASE_URL must target the control-plane PostgreSQL database"; exit 1; fi
 	sqlx migrate revert --source crates/gateway/migrations
 
 migrate-status:
-	@if [ -z "$${DATABASE_URL:-}" ]; then echo "DATABASE_URL must target the control-plane PostgreSQL database"; exit 1; fi
 	sqlx migrate info --source crates/gateway/migrations
 
 fmt:
