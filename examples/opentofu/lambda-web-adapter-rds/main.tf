@@ -116,13 +116,13 @@ resource "aws_lambda_function" "gateway" {
       AWS_LWA_ASYNC_INIT                      = "true"
       CONTROL_DATABASE_URL_SECRET_ARN         = local.control_database_url_secret_arn
       VAULT_CREDENTIALS_SECRET_ARN            = local.vault_credentials_secret_arn
-      OIDC_ISSUER_URL                          = local.oidc_issuer_url
-      OIDC_CLIENT_ID                           = local.oidc_client_id
-      OIDC_ACCESS_TOKEN_AUDIENCE               = local.oidc_access_token_audience
-      OIDC_BOOTSTRAP_ADMIN_SUBJECTS            = join(",", local.oidc_bootstrap_admin_subjects)
-      VAULT_ADDRESS                            = local.vault_address
-      MAX_QUERY_ROWS                           = tostring(local.max_query_rows)
-      MAX_QUERY_DURATION_SECONDS               = tostring(local.max_query_duration_seconds)
+      OIDC_ISSUER_URL                         = local.oidc_issuer_url
+      OIDC_CLIENT_ID                          = local.oidc_client_id
+      OIDC_ACCESS_TOKEN_AUDIENCE              = local.oidc_access_token_audience
+      OIDC_BOOTSTRAP_ADMIN_SUBJECTS           = join(",", local.oidc_bootstrap_admin_subjects)
+      VAULT_ADDRESS                           = local.vault_address
+      MAX_QUERY_ROWS                          = tostring(local.max_query_rows)
+      MAX_QUERY_DURATION_SECONDS              = tostring(local.max_query_duration_seconds)
     }
   }
 
@@ -287,19 +287,19 @@ resource "aws_api_gateway_deployment" "private" {
   triggers = {
     redeployment = sha1(jsonencode({
       methods = {
-        root_http_method           = aws_api_gateway_method.root.http_method
-        root_authorization         = aws_api_gateway_method.root.authorization
-        proxy_http_method          = aws_api_gateway_method.proxy.http_method
-        proxy_authorization        = aws_api_gateway_method.proxy.authorization
-        proxy_request_parameters   = aws_api_gateway_method.proxy.request_parameters
+        root_http_method         = aws_api_gateway_method.root.http_method
+        root_authorization       = aws_api_gateway_method.root.authorization
+        proxy_http_method        = aws_api_gateway_method.proxy.http_method
+        proxy_authorization      = aws_api_gateway_method.proxy.authorization
+        proxy_request_parameters = aws_api_gateway_method.proxy.request_parameters
       }
       integrations = {
-        root_uri              = aws_api_gateway_integration.root.uri
-        root_type             = aws_api_gateway_integration.root.type
-        root_timeout          = aws_api_gateway_integration.root.timeout_milliseconds
-        proxy_uri             = aws_api_gateway_integration.proxy.uri
-        proxy_type            = aws_api_gateway_integration.proxy.type
-        proxy_timeout         = aws_api_gateway_integration.proxy.timeout_milliseconds
+        root_uri      = aws_api_gateway_integration.root.uri
+        root_type     = aws_api_gateway_integration.root.type
+        root_timeout  = aws_api_gateway_integration.root.timeout_milliseconds
+        proxy_uri     = aws_api_gateway_integration.proxy.uri
+        proxy_type    = aws_api_gateway_integration.proxy.type
+        proxy_timeout = aws_api_gateway_integration.proxy.timeout_milliseconds
       }
       resource_policy = aws_api_gateway_rest_api.private.policy
     }))

@@ -10,7 +10,7 @@ locals {
   image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/sql-mcp-gateway@sha256:REPLACE_WITH_IMAGE_DIGEST"
 
   # Existing network resources in the same VPC; the example does not create them.
-  private_subnet_ids                   = ["subnet-0123456789abcdef0", "subnet-0abcdef0123456789"]
+  private_subnet_ids                  = ["subnet-0123456789abcdef0", "subnet-0abcdef0123456789"]
   managed_instance_security_group_ids = ["sg-0123456789abcdef0"]
   task_security_group_ids             = ["sg-0abcdef0123456789"]
   private_alb_target_group_arn        = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/sql-mcp-gateway/0123456789abcdef"
