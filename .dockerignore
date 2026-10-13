@@ -1,0 +1,8 @@
+**
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!deploy/
+!deploy/lambda/
+!deploy/lambda/**

@@ -19,6 +19,8 @@ Self-hosted MCP gateway for PostgreSQL and MySQL, intended for deployment inside
 - `crates/gateway/migrations`: control-plane PostgreSQL schema.
 - `apps/admin`: SvelteKit administration UI.
 - `docs/architecture.md`: product boundaries, security invariants, and implementation scope.
+- `docs/production-readiness.md`: release gates for VPN/private-network deployment, OIDC, Vault, TLS, and recovery.
+- `docs/deployment/`: deployment guides for VPS, ECS Managed Instances, and Lambda Web Adapter with OpenTofu examples.
 
 ## Requirements
 
@@ -67,7 +69,7 @@ Self-hosted MCP gateway for PostgreSQL and MySQL, intended for deployment inside
    make admin-dev
    ```
 
-   Vite serves the UI locally and proxies `/v1` and `/mcp` to `127.0.0.1:8080`. The UI obtains OIDC configuration from the gateway. Production deployments must provide TLS and route the UI plus its `/v1` API requests through the deployment's trusted reverse proxy; do not expose the gateway or databases directly to the public internet.
+   Vite serves the UI locally and proxies `/v1` and `/mcp` to `127.0.0.1:8080`. The UI obtains OIDC configuration from the gateway. Production deployments must provide TLS and route the UI plus its `/v1` API requests through the deployment's trusted reverse proxy; do not expose the gateway or databases directly to the public internet. Before enabling users, complete the environment-specific gates in [Production readiness](docs/production-readiness.md). VPN access does not replace OIDC or per-user/per-database grants.
 
 ## Local integration test
 

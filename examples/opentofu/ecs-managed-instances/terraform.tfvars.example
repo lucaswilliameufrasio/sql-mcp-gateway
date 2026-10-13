@@ -1,0 +1,32 @@
+aws_region  = "us-east-1"
+name        = "sql-mcp-gateway-prod"
+environment = "production"
+
+# Build and push deploy/docker/gateway.Dockerfile before creating the service.
+# Replace the sample digest with the immutable digest published to your ECR repo.
+image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/sql-mcp-gateway@sha256:REPLACE_WITH_IMAGE_DIGEST"
+
+private_subnet_ids                   = ["subnet-0123456789abcdef0", "subnet-0abcdef0123456789"]
+managed_instance_security_group_ids = ["sg-0123456789abcdef0"]
+task_security_group_ids             = ["sg-0abcdef0123456789"]
+private_alb_target_group_arn        = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/sql-mcp-gateway/0123456789abcdef"
+
+control_database_url_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/control-database-url-EXAMPLE"
+vault_admin_token_secret_arn    = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/vault-admin-token-EXAMPLE"
+vault_runtime_token_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/vault-runtime-token-EXAMPLE"
+secret_kms_key_arns             = []
+
+oidc_issuer_url               = "https://identity.example.internal/issuer"
+oidc_client_id                = "sql-mcp-gateway-admin"
+oidc_access_token_audience    = "sql-mcp-gateway"
+oidc_bootstrap_admin_subjects = ["REPLACE_WITH_EXACT_OIDC_SUBJECT"]
+vault_address                 = "https://vault.example.internal:8200"
+
+max_query_rows             = 200
+max_query_duration_seconds = 60
+task_cpu                   = 512
+task_memory_mib            = 1024
+cpu_architecture           = "X86_64"
+instance_storage_size_gib  = 30
+desired_count              = 2
+log_retention_in_days      = 30

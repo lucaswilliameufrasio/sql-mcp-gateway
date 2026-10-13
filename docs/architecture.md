@@ -1,6 +1,6 @@
 # Product and architecture plan
 
-Status: product boundaries and identity/credential decisions accepted; the first end-to-end implementation is present. The local Vault/PostgreSQL/MySQL integration suite validates the dynamic-credential and database-privilege path; production deployment and the broader hardening checklist remain separate work.
+Status: product boundaries and identity/credential decisions accepted; the first end-to-end implementation is present. The local Vault/PostgreSQL/MySQL integration suite validates the dynamic-credential and database-privilege path. Environment-specific deployment and hardening gates are tracked in [production-readiness.md](production-readiness.md); deployment examples are indexed in [deployment guides](deployment/README.md).
 
 ## Product boundary
 
@@ -91,7 +91,7 @@ The local stdio process is an authenticated bridge to the same self-hosted gatew
 - Additional group-based grants and custom role composition.
 - Vault auto-auth methods beyond the first self-hosted deployment configuration.
 
-The credential broker, control plane, OIDC authorization, SQL adapters, admin UI, and HTTP/stdio MCP paths have an initial implementation. The opt-in `make test-integration` suite starts isolated local Vault, PostgreSQL, and MySQL services and validates the real dynamic-credential, DML privilege, uniqueness, and revocation behavior. This proves the local integration contract, not production-specific TLS, network, identity-provider, or operational hardening; those still require deployment-specific verification.
+The credential broker, control plane, OIDC authorization, SQL adapters, admin UI, and HTTP/stdio MCP paths have an initial implementation. The opt-in `make test-integration` suite starts isolated local Vault, PostgreSQL, and MySQL services and validates the real dynamic-credential, DML privilege, uniqueness, and revocation behavior. This proves the local integration contract, not production-specific TLS, network, identity-provider, or operational hardening; those require deployment-specific evidence using the [release checklist](production-readiness.md).
 
 ## External contracts checked
 

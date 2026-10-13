@@ -1,0 +1,30 @@
+[Unit]
+Description=SQL MCP Gateway administration UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sql-mcp-admin
+Group=sql-mcp-admin
+WorkingDirectory=/opt/sql-mcp-gateway/apps/admin
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=ORIGIN=https://sql-gateway.example.internal
+ExecStart=/usr/bin/node build
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+sql-gateway.example.internal {
+	tls internal
+
+	@gateway path /mcp /v1/* /health /readyz
+	handle @gateway {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
