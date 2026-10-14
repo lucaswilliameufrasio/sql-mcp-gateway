@@ -10,4 +10,4 @@
 **/*.tfstate.*
 **/*.tfplan
 **/*.tfvars
-!**/*.tfvars.example
+examples/opentofu/*/locals.auto.tf

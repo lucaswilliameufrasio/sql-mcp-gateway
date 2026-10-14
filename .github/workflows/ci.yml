@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Rust and admin quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.21.0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+
+      - name: Install admin dependencies
+        working-directory: apps/admin
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint and type-check
+        run: make lint
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Build release artifacts
+        run: make build
+
+  integration:
+    name: Vault and database integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare integration temp directory
+        run: mkdir -p /tmp/opencode
+
+      - name: Run live integration suite
+        run: make test-integration
+
+  opentofu:
+    name: OpenTofu examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      TF_PLUGIN_CACHE_DIR: /tmp/opencode/tofu-plugin-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+
+      - name: Format and validate examples without applying
+        shell: bash
+        run: |
+          set -euo pipefail
+          examples=(
+            examples/opentofu/ecs-managed-instances
+            examples/opentofu/lambda-web-adapter-rds
+          )
+          cleanup() {
+            for example in "${examples[@]}"; do
+              rm -f "$example/locals.auto.tf"
+            done
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          for example in "${examples[@]}"; do
+            cp "$example/locals.auto.tf.example" "$example/locals.auto.tf"
+          done
+
+          tofu fmt -check -recursive examples/opentofu
+          for example in "${examples[@]}"; do
+            tofu -chdir="$example" init -backend=false -input=false
+            tofu -chdir="$example" validate
+          done

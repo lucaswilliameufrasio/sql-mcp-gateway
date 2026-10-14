@@ -1,142 +1,116 @@
-# AWS Lambda Web Adapter with RDS PostgreSQL
+# Deploy with AWS Lambda Web Adapter and RDS PostgreSQL
 
-The OpenTofu example packages the Rust HTTP gateway as a Lambda container image
-with AWS Lambda Web Adapter (LWA), attaches it to existing private subnets, and
-publishes it through a **private API Gateway REST API**. The control-plane RDS
-PostgreSQL instance (or RDS Proxy), VPC/subnets/security groups, `execute-api`
-interface endpoint, Vault, target databases, and admin UI are existing
-resources and are not created by the example.
+This procedure builds the gateway as a Lambda container image, configures a private REST API, reviews the OpenTofu plan, and verifies the private route. The example creates the Lambda function/role/policies, a private API Gateway REST API, stage, access-log group, and invoke permission. It does **not** create the ECR repository, VPC/subnets/security groups, RDS/RDS Proxy, `execute-api` or Secrets Manager endpoints, Vault, target databases, OIDC provider, or admin UI. Deploy the UI separately using the [shared admin UI instructions](README.md#deploy-the-admin-ui).
 
-The MCP endpoint is request/response JSON today: the gateway accepts POST
-requests with `application/json` and returns JSON; it does not implement
-Streamable HTTP SSE/GET sessions. LWA/API Gateway compatibility is plausible
-for this bounded request/response mode, but this repository has **not** tested
-the combination. Validate protocol headers, request-size limits, timeouts,
-OIDC flow, and cold-start behavior in an isolated account before production.
+> **Compatibility is not yet proven.** The gateway currently accepts JSON-RPC with authenticated `POST /mcp` and `application/json`; it does not implement Streamable HTTP SSE or GET sessions. This repository has not tested this Lambda Web Adapter + API Gateway combination. Validate protocol headers, payload limits, timeout behavior, OIDC, cold starts, and concurrency in an isolated AWS account before production.
 
-## Network and identity prerequisites
+## Before you start
 
-- Lambda private subnets must have routes/security-group egress to the RDS
-  control database (or RDS Proxy), Vault, every registered PostgreSQL/MySQL
-  target, and the OIDC issuer/JWKS. The RDS security group must accept TCP/5432
-  from the Lambda security group.
-- The Lambda bootstrap retrieves secrets from Secrets Manager during runtime
-  initialization. Provide a Secrets Manager interface endpoint in the VPC or
-  NAT/approved egress for that AWS API. A VPC-attached Lambda has no internet
-  access merely because a selected subnet is public. If the OIDC provider is
-  public, its HTTPS discovery/JWKS endpoints also need a working egress path.
-- Create an `execute-api` interface VPC endpoint. Its security group must allow
-  TCP/443 from approved VPN clients and/or the internal reverse proxy. Route
-  private DNS from those clients to the VPC endpoint. The API resource policy
-  in the example accepts invocation only through that exact endpoint.
-- API Gateway authorization is `NONE` because the gateway validates OIDC
-  bearer tokens itself. Do not remove the source-VPCE policy or expose the
-  endpoint publicly.
-- This example does not deploy the admin UI. The UI uses same-origin relative
-  `/v1/*` URLs, so serve it behind an approved internal reverse proxy that
-  routes `/v1/*` (and, for MCP clients, `/mcp`) to the private API URL, or
-  implement and validate an equivalent same-origin arrangement. Register the
-  browser origin plus `/auth/callback` with the OIDC client. Do not enable
-  permissive cross-origin access as a substitute for routing.
+Prepare these shared resources first:
 
-## Secret contract
+- A supported AWS account/Region, an AWS deployment identity with permission to create the example resources and pass the Lambda role, and an existing private ECR repository.
+- At least two private Lambda subnets in a VPC with network routes/security-group egress to RDS or RDS Proxy, Vault, every target database, OIDC discovery/JWKS, and Secrets Manager. RDS must accept TCP/5432 from the Lambda security group. A VPC-attached Lambda does not gain internet access just because a subnet is public; use the Secrets Manager interface endpoint or approved NAT/proxy routes.
+- An `execute-api` interface VPC endpoint for private API clients. Its security group must allow TCP/443 from approved VPN users or the internal reverse proxy. Configure private DNS/routing from those clients to the endpoint. The API resource policy allows invocation only through the configured endpoint; do not remove that condition or publish a public API.
+- A dedicated control-plane PostgreSQL database. Its gateway role needs the migration privileges required at startup, limited to that database/schema; do not use the RDS master account. Budget connections for Lambda concurrency and other clients.
+- Two Secrets Manager entries: (1) a `SecretString` containing the control database URL with TLS/hostname verification enabled; (2) a JSON `SecretString` with distinct `admin_token` and `runtime_token` fields for Vault. The runtime token should only issue/revoke approved leases. The example stores only ARNs in Lambda configuration and IAM.
+- Vault with the database secrets engines configured, target PostgreSQL/MySQL databases, an HTTPS Vault endpoint, OIDC issuer/client/audience, and the exact bootstrap administrator OIDC `sub`.
+- A separately deployed admin UI and a trusted same-origin route for browser requests. This example does not deploy the UI. The UI must reach `/v1/*` on its own origin; route those paths and `/mcp` to the private API, and register the browser origin plus `/auth/callback` with OIDC. Do not substitute permissive CORS for the trusted routing boundary.
 
-The sample image includes [`deploy/lambda/bootstrap.py`](../../deploy/lambda/bootstrap.py).
-Before starting the gateway binary, it calls Secrets Manager using the Lambda
-execution role and passes values to the child process through its environment.
-OpenTofu stores only secret ARNs in Lambda configuration and IAM policy; do not
-read secret values through OpenTofu data sources or place them in `.tfvars`.
+If a secret uses a customer-managed KMS key, supply its ARN and update the KMS key policy to allow the Lambda execution role to decrypt. The example also adds a runtime deny for the Lambda function's VPC ENI-management calls while retaining the AWS-managed VPC access role policy required by Lambda's service.
 
-Create these secrets outside this example:
+## Deploy the gateway
 
-1. `control_database_url_secret_arn`: `SecretString` is the PostgreSQL URL for
-   the dedicated control-plane database (or its RDS Proxy endpoint), with
-   hostname verification/TLS enabled. Use a gateway-specific role, not the RDS
-   master user. The current application applies SQLx migrations on startup, so
-   that role needs the required migration privileges, limited to this dedicated
-   database/schema. Create the login using your secure database-administration
-   workflow, set its password interactively (for example, with `psql`'s
-   `\password` command), and store the URL in Secrets Manager through an
-   approved secret-input channel. Never put the password in a SQL file, shell
-   argument, OpenTofu variable, or repository.
-2. `vault_credentials_secret_arn`: `SecretString` is a JSON object with
-   `admin_token` and `runtime_token` string fields. The tokens must be distinct;
-   keep the runtime token restricted to issuing and revoking approved leases.
+### 1. Build and push an immutable image
 
-The Lambda role can read only those secret ARNs; add `secret_kms_key_arns` only
-for customer-managed keys, and ensure each KMS key policy also permits the
-Lambda execution role to decrypt. Bootstrap failures log the variable
-name/error class, not the resolved values. Rotated secrets are read by new
-execution environments; plan a safe environment/version refresh for secret
-rotation.
-
-## Build and publish the image
-
-The provided image selects x86-64. Update both Lambda architecture and build
-platform together before using another architecture:
+The example selects x86-64. Set non-secret ECR values in your deployment shell:
 
 ```sh
+export AWS_REGION=us-east-1
+export AWS_ACCOUNT_ID=123456789012
+export ECR_REPOSITORY=sql-mcp-gateway-lambda
+export RELEASE_TAG=replace-with-an-immutable-release-tag
+```
+
+Create the repository once if it is not already owned by your platform stack:
+
+```sh
+aws ecr create-repository --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" \
+  --image-tag-mutability IMMUTABLE --encryption-configuration encryptionType=AES256
+```
+
+Authenticate and build/push from the repository root:
+
+```sh
+aws ecr get-login-password --region "$AWS_REGION" \
+  | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+
 docker buildx build --platform linux/amd64 \
   -f deploy/docker/lambda.Dockerfile \
-  -t "$ECR_REPOSITORY_URI:$RELEASE_TAG" --push .
+  -t "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$RELEASE_TAG" \
+  --push .
 ```
 
-Pin `lambda_image_uri` to the immutable ECR digest. Review the pinned AWS
-Lambda Web Adapter and Boto3 versions in the Dockerfile/requirements file as
-part of dependency updates.
-
-## Configure and review OpenTofu
-
-Start in [`examples/opentofu/lambda-web-adapter-rds/`](../../examples/opentofu/lambda-web-adapter-rds/):
+Get the immutable digest and use it to form `lambda_image_uri`:
 
 ```sh
-cp terraform.tfvars.example terraform.tfvars
+aws ecr describe-images --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" \
+  --image-ids imageTag="$RELEASE_TAG" --query 'imageDetails[0].imageDigest' --output text
 ```
 
-Replace the private subnet/security group IDs, VPC endpoint ID, secret ARNs,
-image digest, identity settings, and Vault address. Use encrypted, restricted,
-locked OpenTofu state; review and commit the generated `.terraform.lock.hcl`
-for reproducible provider selection. The example creates the Lambda function,
-its execution role/policies, a private REST API, a stage with access logs, and
-API Gateway's invoke permission. It does not configure the regional API
-Gateway account CloudWatch role; configure that once in the owning platform
-stack before expecting execution logs.
+Use `<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<digest>`, not the mutable tag. If changing architecture, update the Lambda `architectures` setting and build platform together. Review the pinned Lambda Web Adapter and Boto3 versions during dependency updates.
 
-Run the non-deploying checks and inspect the plan:
+### 2. Set operator-local OpenTofu values
+
+From the example directory:
+
+```sh
+cd examples/opentofu/lambda-web-adapter-rds
+cp locals.auto.tf.example locals.auto.tf
+```
+
+Edit `locals.auto.tf`: replace the image digest, private subnet/security group IDs, `execute-api` endpoint ID, both secret ARNs, OIDC values, exact bootstrap subject, and Vault URL. Tune memory, timeout, reserved concurrency, query duration, API throttles, stage name, and log retention. The file is ignored by Git; never put secret contents in it. These values include internal resource identifiers and the OIDC subject, so do not publish a customized copy.
+
+Before `tofu init`, configure your organization's encrypted, access-controlled, locked remote state backend in this example directory. The example intentionally does not choose a backend. Keep the generated `.terraform.lock.hcl` under version control for reproducible provider selection.
+
+### 3. Format, initialize, validate, and inspect the plan
+
+Run from `examples/opentofu/lambda-web-adapter-rds/`:
 
 ```sh
 tofu fmt -check -recursive
 tofu init
 tofu validate
-tofu plan
+tofu plan -out=reviewed.tfplan
 ```
 
-The example's API Gateway integration timeout is 29 seconds, the Lambda
-timeout defaults to 28 seconds, and `MAX_QUERY_DURATION_SECONDS` defaults to
-18 seconds. Keep enough margin for authorization, database setup, and response
-serialization. Increasing only the query limit can make API Gateway return a
-504 while Lambda continues work.
+Review the exact Lambda image/architecture, private API resource policy and VPC endpoint, IAM access to only the two secret ARNs, KMS key policies, subnet/security-group egress, reserved concurrency, CloudWatch role/logging, integration timeout, and expected costs. The example sets the API Gateway integration timeout to 29 seconds, Lambda timeout to 28 seconds, query duration to 18 seconds, and reserved concurrency to 5. Keep time for authentication, database setup, and response serialization; raising only the query limit can produce a 504 while Lambda continues running.
 
-The application currently configures each control PostgreSQL pool for up to 20
-connections. With the example's reserved concurrency of 5, budget up to roughly
-100 client connections, plus other services and migration/startup activity.
-This is a safety ceiling, not a measured demand estimate. Set reserved
-concurrency from the RDS connection budget; an RDS Proxy does not eliminate the
-Lambda-to-proxy client connection count. Monitor RDS connection metrics and
-validate pool/proxy behavior with the actual SQLx workload.
+The gateway's control-plane pool allows up to 20 connections per execution environment. With concurrency set to 5, budget up to roughly 100 Lambda-to-database/proxy connections, plus other services and migration/startup activity. This is a ceiling, not a measured demand estimate. Set concurrency from the actual RDS connection budget and validate SQLx/RDS Proxy behavior with representative requests.
 
-## Validation gates before production
+### 4. Deploy only after your plan is approved
 
-After your controlled apply, verify from a VPN-approved network that the
-private invoke URL is reachable only through the configured VPC endpoint;
-check `/health` and `/readyz`, the browser OIDC callback, authenticated admin
-API calls, and representative bounded MCP queries. Verify that requests from
-outside the endpoint are denied, secret rotation is handled, cold starts and
-scale-out stay within timeout/connection budgets, and the control DB restore
-procedure works. The current startup migration behavior and fixed pool limit
-make these mandatory gates, not assumptions.
+Applying is an operator action, not an automatic step in this guide. After your change-control process approves the exact plan, run `tofu apply reviewed.tfplan` from the example directory. Keep the saved plan private and delete it through your normal secure artifact-retention process after use. This creates IAM, Lambda, and API Gateway resources and can incur AWS charges. The example does not configure the regional API Gateway account CloudWatch role; configure that once in the owning platform stack before expecting API execution logs.
 
-Complete the shared [production-readiness checklist](../production-readiness.md).
+### 5. Verify from an approved private client network
+
+Inspect the outputs, then call the private stage URL from a client that routes through the configured `execute-api` VPC endpoint:
+
+```sh
+tofu output
+API_URL="$(tofu output -raw private_api_invoke_url)"
+curl -i "$API_URL/health"
+curl -i "$API_URL/readyz"
+```
+
+Expect `204` from both. `/readyz` tests the control database only. Check the `/aws/lambda/<function-name>` CloudWatch log group for startup/secret-bootstrap failures and the API access log group for private API requests. From a network outside the allowed VPC endpoint, confirm invocation is denied.
+
+Next, verify the admin UI's same-origin `/v1/*` route and OIDC callback, sign in with the bootstrap administrator, register a target database, have each user sign in once, and grant minimum per-user/per-database access. Test representative authenticated MCP `POST /mcp` requests through the intended proxy/API route. Do not send resolved secrets or bearer tokens in diagnostic logs or command arguments.
+
+## Upgrade and rollback
+
+Publish each release with a new immutable tag and pin `lambda_image_uri` to its digest. Review/apply the image change through the same plan approval process and retain the previous digest. To roll back, restore that digest in `locals.auto.tf`, review the plan, and apply it through change control. Exercise secret rotation, cold-start/scale-out behavior, timeout boundaries, database restore, and migration compatibility before production; the Lambda/API integration remains untested by this repository.
+
+Complete the shared [production readiness checklist](../production-readiness.md).
 
 ## References
 

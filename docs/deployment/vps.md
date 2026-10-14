@@ -1,25 +1,23 @@
-# VPS deployment
+# Deploy on a VPS
 
-This guide runs the gateway and administration UI as separate systemd services.
-The gateway listens on loopback and the reverse proxy presents one TLS origin.
-It covers a new Caddy site and integration with an existing Caddy or Nginx
-server. Replace example hostnames, paths, and VPN ranges before use.
+This procedure runs the Rust gateway and SvelteKit admin UI as separate systemd services. Both listen on loopback; Caddy or Nginx presents one private TLS origin. It covers a new proxy installation and integration into an existing Caddy/Nginx host.
 
-## Prerequisites
+## Before you start
 
-- A supported Linux VPS with systemd, Rust/Cargo for building the gateway, and
-  Node.js/pnpm for building the admin UI (or install release artifacts built
-  in CI for the VPS architecture and OS).
-- Private network/VPN routes from the VPS to Vault and every registered target,
-  plus outbound HTTPS access to the OIDC discovery/JWKS endpoints.
-- A dedicated OS user for each service and a secret-delivery process. Do not
-  commit an environment file or put secret values in shell arguments.
-- A DNS name and TLS certificate trusted by the MCP clients and administrators.
+Have these ready:
 
-## Build and install
+- A Linux VPS with systemd, private/VPN routes to Vault and every target database, and outbound HTTPS to the OIDC discovery/JWKS endpoints.
+- A dedicated PostgreSQL database for gateway control-plane metadata. The gateway applies its embedded migrations at startup; its database identity needs migration rights in this database only.
+- An OIDC client/provider. Register the final admin UI origin with the callback `/auth/callback` (for example `https://sql-gateway.example.internal/auth/callback`). Bootstrap admin access is based on the exact OIDC `sub` value, not email.
+- Vault with the PostgreSQL and/or MySQL database secrets engines configured, separate administration/runtime tokens, and a secure secret-delivery mechanism on the VPS.
+- DNS and a TLS certificate trusted by the approved browser/MCP clients. Keep the host and target databases private; do not open database ports to the internet.
+- Rust/Cargo and Node.js/pnpm on a build host, or release artifacts built for the VPS's OS, CPU architecture, and libc family.
 
-Build the artifacts from the repository root, preferably in a CI job that uses
-the same Linux architecture and libc family as the VPS:
+## Deploy the application
+
+### 1. Build release artifacts
+
+From the repository root on the build host:
 
 ```sh
 cargo build --locked --release -p sql-mcp-gateway
@@ -28,29 +26,38 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Install the gateway binary at `/opt/sql-mcp-gateway/sql-mcp-gateway` and the
-contents required by the SvelteKit Node adapter under
-`/opt/sql-mcp-gateway/apps/admin/` (including the generated `build/` directory
-and production Node dependencies). The service templates in `deploy/vps/`
-assume these paths and users named `sql-mcp-gateway` and `sql-mcp-admin`.
-Edit the admin unit's `ORIGIN` to the exact external HTTPS origin used by the
-browser and registered with OIDC.
+Transfer the gateway binary at `target/release/sql-mcp-gateway` and the admin UI's `build/`, `node_modules/`, and `package.json` to the VPS. Preserve the layout below. Build on a compatible Linux host/container; do not copy a binary built for another OS or architecture.
 
-Create `/etc/sql-mcp-gateway/gateway.env` with mode `0640`, owned by
-`root:sql-mcp-gateway`, and supply the required settings from your secret
-manager. At minimum configure `CONTROL_DATABASE_URL`, `OIDC_ISSUER_URL`,
-`OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`,
-`OIDC_BOOTSTRAP_ADMIN_SUBJECTS`, `VAULT_ADDRESS`, `VAULT_ADMIN_TOKEN`, and
-`VAULT_RUNTIME_TOKEN`. The two Vault tokens must be distinct. Keep the control
-database dedicated to gateway metadata; do not put target database credentials
-there. `BIND_ADDRESS` is set to `127.0.0.1:8080` by the supplied unit.
+### 2. Create service users and install the artifacts
 
-The gateway currently applies its embedded SQLx migrations at process startup.
-Its control-plane PostgreSQL pool allows up to 20 connections per process.
-Give its DB identity migration rights only in the dedicated control database,
-and include this startup migration behavior in restart/upgrade planning.
+Run once on the VPS. If either service account already exists, keep and verify that account rather than creating a duplicate:
 
-Install and enable the service units:
+```sh
+sudo useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin sql-mcp-gateway
+sudo useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin sql-mcp-admin
+sudo install -d -o root -g root -m 0755 /opt/sql-mcp-gateway/apps/admin
+```
+
+From the checkout/release directory on the VPS, install the matching artifacts:
+
+```sh
+sudo install -m 0755 target/release/sql-mcp-gateway /opt/sql-mcp-gateway/sql-mcp-gateway
+sudo cp -a apps/admin/build apps/admin/node_modules apps/admin/package.json /opt/sql-mcp-gateway/apps/admin/
+```
+
+The systemd templates assume these paths and service account names. The admin process runs `node build` from `/opt/sql-mcp-gateway/apps/admin`.
+
+### 3. Deliver runtime configuration
+
+Create `/etc/sql-mcp-gateway/gateway.env` through your approved secret manager or root-controlled provisioning workflow. Set owner `root:sql-mcp-gateway` and mode `0640`. Do not put secret values in command arguments, the repository, or deployment notes.
+
+Set at least `CONTROL_DATABASE_URL`, `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`, `OIDC_BOOTSTRAP_ADMIN_SUBJECTS`, `VAULT_ADDRESS`, `VAULT_ADMIN_TOKEN`, and `VAULT_RUNTIME_TOKEN`. The Vault tokens must be distinct. `BIND_ADDRESS=127.0.0.1:8080` is already supplied by the gateway unit. The control URL must target the dedicated control-plane database, not a registered target.
+
+Set `ORIGIN` in `deploy/vps/sql-mcp-admin.service` to the exact external HTTPS origin before installing the unit. This is used by the SvelteKit Node adapter and must match the OIDC redirect URI origin. Keep the original `HOST=127.0.0.1` and `PORT=3000` values.
+
+### 4. Install and start the systemd services
+
+From the repository/release directory containing `deploy/vps/`:
 
 ```sh
 sudo install -m 0644 deploy/vps/sql-mcp-gateway.service /etc/systemd/system/
@@ -59,52 +66,66 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sql-mcp-gateway sql-mcp-admin
 ```
 
-Check service state and logs without printing environment values:
+The gateway applies its embedded SQLx migrations at startup. Its control-plane connection pool allows up to 20 connections per process. Budget those connections and test schema changes against an isolated database before upgrading production.
+
+Check service state and logs without printing the environment file:
 
 ```sh
 sudo systemctl status sql-mcp-gateway sql-mcp-admin
-sudo journalctl -u sql-mcp-gateway -u sql-mcp-admin
+sudo journalctl -u sql-mcp-gateway -u sql-mcp-admin --since today
 ```
 
-## VPS without an existing reverse proxy: install Caddy
+## Put the services behind a reverse proxy
 
-For a new host with no Caddy/Nginx, install and enable Caddy using your Linux
-distribution's supported package source, then adapt the supplied Caddyfile.
-Keep the host firewall and VPN ACL limited to approved peers; the site example
-assumes that network boundary already exists.
+Do not publish ports `8080` or `3000`. Expose only TLS to approved VPN/private-network peers. Proxy `/mcp`, `/v1/*`, `/health`, and `/readyz` to the gateway at `127.0.0.1:8080`; proxy all other UI routes (including `/auth/callback`) to the admin service at `127.0.0.1:3000`. Preserve the `Authorization` header on `/mcp` and `/v1/*`.
 
-## Existing Caddy site
+### New VPS without Caddy or Nginx
 
-Copy or adapt [`deploy/vps/Caddyfile.example`](../../deploy/vps/Caddyfile.example)
-into the active Caddy configuration. It routes `/mcp`, `/v1/*`, `/health`, and
-`/readyz` to the gateway, and other paths to the admin UI. The example uses
-Caddy's internal CA for a private hostname; distribute and trust that CA on
-approved clients before connecting. If using a publicly trusted certificate,
-choose a challenge method compatible with a VPN-only origin and do not open
-unneeded public firewall ports.
+Install Caddy from the package source supported by your Linux distribution. Replace the sample hostname in [`deploy/vps/Caddyfile.example`](../../deploy/vps/Caddyfile.example), then install and enable it:
 
-When Caddy already owns the hostname, merge the matchers/handlers into the
-existing site block and preserve its other routes, TLS policy, and snippets.
-Avoid defining duplicate site blocks for the same host.
+```sh
+sudo install -m 0644 deploy/vps/Caddyfile.example /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl enable --now caddy
+```
 
-## Existing Nginx server
+The example uses Caddy's internal CA for a private hostname; distribute and trust that CA on approved clients before connecting. If you use a publicly trusted certificate, select a challenge method compatible with the private origin and do not open unnecessary firewall ports.
 
-Adapt [`deploy/vps/nginx-server.example.conf`](../../deploy/vps/nginx-server.example.conf)
-inside the existing TLS virtual host. Keep the TLS certificate and unrelated
-locations owned by the existing site. Restrict `/health` and `/readyz` to the
-actual monitoring/VPN CIDRs; the example CIDRs are placeholders. Nginx must
-preserve the `/v1/...` and `/mcp` paths and forward the `Authorization` header.
+### Existing Caddy site
 
-For either proxy, expose only TLS to approved VPN peers. Do not publish port
-8080 or 3000, and restrict the unauthenticated `/health`, `/readyz`, and
-`/v1/auth/config` routes at the network/proxy boundary. `/readyz` checks the
-control-plane database only; it does not prove Vault or target database health.
+Merge the matchers/handlers from [`deploy/vps/Caddyfile.example`](../../deploy/vps/Caddyfile.example) into the existing site block, then validate and reload Caddy using your normal change process. For the default Caddyfile path:
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+```
+
+Preserve the existing site's other routes, TLS policy, and snippets; do not add a duplicate site block for the same hostname.
+
+### Existing Nginx server
+
+Merge [`deploy/vps/nginx-server.example.conf`](../../deploy/vps/nginx-server.example.conf) into the existing TLS virtual host, then validate and reload Nginx. For the standard systemd service name:
+
+```sh
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Keep the existing certificates and unrelated routes. Replace the sample health-check CIDR with the actual monitoring/VPN range; the example restricts `/health` and `/readyz` but they are unauthenticated. `/v1/auth/config` is also unauthenticated and should be reachable only through the trusted origin.
+
+## Verify and onboard
+
+From an approved private/VPN client network, verify the proxy and service state:
+
+```sh
+curl -i https://sql-gateway.example.internal/health
+curl -i https://sql-gateway.example.internal/readyz
+```
+
+Both return `204` when successful. `/health` confirms the process responds; `/readyz` additionally checks the control-plane database only. Neither proves Vault or target-database health.
+
+Then sign in through the admin UI with the configured bootstrap subject, register a target database (the supplied database admin credential is sent to Vault), have each user sign in once, and grant only the required per-user/per-database access. Test an authenticated MCP `POST /mcp` request using an OIDC access token whose audience matches the gateway setting. Complete the shared [production readiness checklist](../production-readiness.md) before enabling real users.
 
 ## Upgrade and rollback
 
-Build an immutable release, back up the control-plane database, review the
-embedded migration changes, then replace the gateway binary and restart its
-service. Keep the prior binary and admin build available for rollback. A
-database migration can make an old binary incompatible, so test rollback after
-each schema change in an isolated environment. Complete the shared
-[production-readiness checklist](../production-readiness.md) before go-live.
+Build an immutable release and keep the previous binary and admin build. Back up the control-plane database and review embedded migration changes before switching files and restarting services. Since migrations run at gateway startup, an upgraded schema may not work with the previous binary; test rollback after each schema change in an isolated environment. A simple binary rollback is not a database rollback plan.
