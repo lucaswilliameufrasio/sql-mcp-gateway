@@ -6,41 +6,31 @@ The HTTP endpoint currently handles authenticated JSON-RPC requests with `POST /
 
 ## Choose a path
 
-| Goal | Start here |
-| --- | --- |
-| Run the gateway and admin UI locally | [Local first run](#local-first-run) |
-| Deploy on a VPS, with or without an existing Caddy/Nginx | [VPS deployment](docs/deployment/vps.md) |
-| Deploy the gateway on Amazon ECS Managed Instances | [ECS deployment](docs/deployment/ecs-managed-instances.md) |
+| Goal                                                               | Start here                                                     |
+| ------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Run the gateway and admin UI locally                               | [Local first run](#local-first-run)                            |
+| Deploy on a VPS, with or without an existing Caddy/Nginx           | [VPS deployment](docs/deployment/vps.md)                       |
+| Deploy the gateway on Amazon ECS Managed Instances                 | [ECS deployment](docs/deployment/ecs-managed-instances.md)     |
 | Deploy the gateway on Lambda with a private API and RDS PostgreSQL | [Lambda deployment](docs/deployment/lambda-web-adapter-rds.md) |
-| Check production gates | [Production readiness](docs/production-readiness.md) |
+| Check production gates                                             | [Production readiness](docs/production-readiness.md)           |
 
 ## Local first run
 
 This is not a one-command demo: the gateway needs a control-plane PostgreSQL database, an OIDC provider, and Vault configured with the database secrets engines. It also needs private-network access to each database you register. These services are intentionally not started with the app.
 
-### 1. Install the local toolchain
+### 1. Prepare the local project
 
-You need the stable Rust toolchain (edition 2024), Cargo, Node.js and pnpm. Install the SQLx CLI once to manage the gateway's control database migrations:
-
-```sh
-cargo install sqlx-cli --no-default-features --features postgres,rustls
-```
-
-Install the admin UI dependencies from the repository root:
+Install the stable Rust toolchain (edition 2024), Node.js, and pnpm, then run `make setup` from the repository root:
 
 ```sh
-cd apps/admin
-pnpm install --frozen-lockfile
-cd ../..
+make setup
 ```
+
+The target fetches the locked Rust dependencies, installs the SQLx CLI if needed, installs the admin UI dependencies, and creates `.env` from `.env.example` only if `.env` does not already exist. It does not install Rust, Node.js, or pnpm, and it does not start or provision PostgreSQL, OIDC, or Vault.
 
 ### 2. Configure local services
 
-Copy the template, then fill it using your local secret-management workflow:
-
-```sh
-cp .env.example .env
-```
+Review `.env` and fill it using your local secret-management workflow. `make setup` never overwrites an existing `.env`.
 
 Set `CONTROL_DATABASE_URL` and `DATABASE_URL` to the **same dedicated PostgreSQL control-plane database**. The gateway reads `CONTROL_DATABASE_URL`; SQLx migrations use `DATABASE_URL`. Do not point either one at a registered target database.
 

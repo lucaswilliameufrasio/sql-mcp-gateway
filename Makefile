@@ -1,4 +1,24 @@
-.PHONY: migrate-create migrate-up migrate-down migrate-status fmt lint test test-integration build run run-stdio admin-dev
+.PHONY: setup migrate-create migrate-up migrate-down migrate-status fmt lint test test-integration build run run-stdio admin-dev
+
+setup:
+	@command -v cargo >/dev/null 2>&1 || { echo "Rust/Cargo is required; install the stable Rust toolchain first." >&2; exit 1; }
+	@command -v rustc >/dev/null 2>&1 || { echo "rustc is required; install the stable Rust toolchain first." >&2; exit 1; }
+	@command -v node >/dev/null 2>&1 || { echo "Node.js is required; install it before running make setup." >&2; exit 1; }
+	@command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required; install it before running make setup." >&2; exit 1; }
+	cargo fetch --locked
+	@if ! command -v sqlx >/dev/null 2>&1; then \
+		echo "Installing SQLx CLI..."; \
+		cargo install sqlx-cli --no-default-features --features postgres,rustls; \
+	fi
+	@command -v sqlx >/dev/null 2>&1 || { echo "sqlx is not on PATH; add Cargo's bin directory and rerun make setup." >&2; exit 1; }
+	cd apps/admin && pnpm install --frozen-lockfile
+	@if [ -e .env ]; then \
+		echo ".env already exists; leaving it unchanged."; \
+	else \
+		umask 077; cp .env.example .env; \
+		echo "Created .env from .env.example with owner-only permissions."; \
+	fi
+	@echo "Local project dependencies are ready. Configure .env with your local PostgreSQL, OIDC, and Vault settings."
 
 migrate-create:
 	@if [ -z "$(name)" ]; then echo "Usage: make migrate-create name=add_table"; exit 1; fi
