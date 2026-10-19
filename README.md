@@ -36,40 +36,25 @@ Start the separate development-only Compose services:
 make dev-up
 ```
 
-This creates `.env.dev` with owner-only permissions, `.dev/vault-runtime/runtime.env` for Vault's scoped runtime token, and `.dev/tls/` with local-only database certificates. These paths are ignored by Git; the existing `.env` is not read or overwritten. The stack uses Authentik, Vault dev mode, a dedicated control database, and TLS-enabled PostgreSQL/MySQL targets. It publishes Authentik, Vault, and the gateway only on `127.0.0.1`; the database targets are reachable only inside the Compose network. The stack defaults to Docker's `rootless` context; set `DOCKER_CONTEXT` only if you deliberately selected another context.
+This creates `.env.dev` with owner-only permissions, `.dev/vault-runtime/runtime.env` for Vault's scoped runtime token, and `.dev/tls/` with local-only database certificates. These paths are ignored by Git; the existing `.env` is not read or overwritten. The stack uses Authentik, Vault dev mode, a dedicated control database, and TLS-enabled PostgreSQL/MySQL targets. It publishes Authentik, Vault, the gateway, and the admin UI only on `127.0.0.1`; the database targets are reachable only inside the Compose network. The stack defaults to Docker's `rootless` context; set `DOCKER_CONTEXT` only if you deliberately selected another context.
 
-#### 2. Configure the local Authentik OIDC client
+#### 2. Authentik OIDC configuration (automatic)
 
-Open <http://127.0.0.1:9000> and sign in as `akadmin` using the local bootstrap password stored in `.env.dev`. Do not paste local credentials into chat or commit them. Create a separate local user with username `dev-admin`, then create an application and OAuth2/OIDC provider with these values:
+The Authentik worker imports `deploy/authentik/sql-mcp-gateway-dev.yaml` from the Compose stack. It creates the `sql-mcp-gateway-dev` public Authorization Code application/provider and the `dev-admin` test user, assigns that user to the application, selects Authentik's asymmetric self-signed key, and configures the `openid`, `profile`, and `email` scopes. The gateway's admin subject is `dev-admin`.
 
-| Setting | Value |
-| --- | --- |
-| Application slug | `sql-mcp-gateway-dev` |
-| Client ID | `sql-mcp-gateway-dev` |
-| Client type / grant | Public / Authorization Code |
-| PKCE | The UI sends S256; Authentik verifies it when present |
-| Subject mode | Username (`dev-admin`) |
-| Redirect URI | `http://127.0.0.1:5173/auth/callback` |
-| Issuer | `http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/` |
-| Access-token audience | Same as the client ID |
+The OIDC defaults are issuer `http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/`, client ID and audience `sql-mcp-gateway-dev`, and redirect URI `http://127.0.0.1:5173/auth/callback`. The browser client sends S256 PKCE; Authentik 2026.8 validates PKCE when sent but does not provide a server-side option to require it. The Authentik worker healthcheck waits for issuer discovery, and the gateway depends on that healthcheck. No Authentik UI setup is required.
 
-Include the `openid`, `profile`, and `email` scope mappings, assign the `dev-admin` user to the application, and select an asymmetric signing key (for example, an Authentik self-signed key). The gateway needs the public JWKS key and rejects HS256-signed tokens. Authentik 2026.8 verifies PKCE when the client sends a challenge but does not provide a provider-side setting to require PKCE; `oidc-client-ts` sends S256 for this public client, and the stack remains loopback-only for local development. The generated `.env.dev` already contains the issuer/client/audience/subject values above; if you choose different values in Authentik, update the matching variables there before starting the gateway.
+The generated `.env.dev` contains separate local-only passwords for `akadmin` and `dev-admin`. Use the `dev-admin` password from that owner-only file when signing in to the gateway; never paste either password into chat or commit them.
 
 #### 3. Start the gateway and admin UI
 
-After Authentik is configured, start the gateway container:
+Start the gateway and admin UI together in Compose:
 
 ```sh
 make dev-app
 ```
 
-In another terminal, start the admin UI on the host:
-
-```sh
-make admin-dev
-```
-
-Open <http://127.0.0.1:5173> and sign in as `dev-admin`. `make dev-status` shows service status. Use `make dev-pause` and `make dev-resume` to pause/resume the stack without losing Vault's in-memory development state.
+Open <http://127.0.0.1:5173> and sign in as `dev-admin`. `make dev-status` shows service status. Use `make dev-pause` and `make dev-resume` to pause/resume the stack without losing Vault's in-memory development state. `make admin-dev` remains available for the separate workflow that runs an admin UI on the host against services you already operate.
 
 In **Databases**, register either sample target using the Compose service hostname and port: `target-postgres:5432` or `target-mysql:3306`. Use database `sql_mcp_gateway_dev`, the matching generated root credential from `.env.dev`, and the CA certificate at `.dev/tls/certs/ca.crt`. The local credentials and self-signed certificates are for this stack only.
 

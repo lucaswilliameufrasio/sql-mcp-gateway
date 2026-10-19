@@ -124,6 +124,7 @@ services:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:8200:8200"
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:5173:5173"
     restart: unless-stopped
     shm_size: 512mb
     volumes:
@@ -142,16 +143,30 @@ services:
     environment:
       AUTHENTIK_BOOTSTRAP_EMAIL: dev-admin@localhost
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run make dev-up to generate local settings}
+      DEV_ADMIN_PASSWORD: ${DEV_ADMIN_PASSWORD:?run make dev-up to generate local settings}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:?run make dev-up to generate local settings}
       AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?run make dev-up to generate local settings}
       AUTHENTIK_POSTGRESQL__USER: authentik
       AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run make dev-up to generate local settings}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?run make dev-up to generate local settings}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          ak healthcheck && python3 -c "import os, urllib.parse, urllib.request; issuer=urllib.parse.urlsplit(os.environ['OIDC_ISSUER_URL']); path=issuer.path.rstrip('/') + '/.well-known/openid-configuration'; url=urllib.parse.urlunsplit(('http', 'authentik:9000', path, '', '')); urllib.request.urlopen(url, timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     restart: unless-stopped
     shm_size: 512mb
     user: root
     volumes:
       - authentik-data:/data
+      - ./deploy/authentik/sql-mcp-gateway-dev.yaml:/blueprints/sql-mcp-gateway-dev.yaml:ro
     networks:
       dev:
         aliases:
@@ -188,6 +203,8 @@ services:
     depends_on:
       authentik:
         condition: service_healthy
+      authentik-worker:
+        condition: service_healthy
       control-postgres:
         condition: service_healthy
       vault:
@@ -197,15 +214,36 @@ services:
       CONTROL_DATABASE_URL: postgres://sqlgateway:${CONTROL_DB_PASSWORD:?run make dev-up to generate local settings}@control-postgres:5432/sql_mcp_gateway?sslmode=disable
       MAX_QUERY_DURATION_SECONDS: "30"
       MAX_QUERY_ROWS: "200"
-      OIDC_ACCESS_TOKEN_AUDIENCE: ${OIDC_ACCESS_TOKEN_AUDIENCE:?configure the Authentik client in .env.dev}
-      OIDC_BOOTSTRAP_ADMIN_SUBJECTS: ${OIDC_BOOTSTRAP_ADMIN_SUBJECTS:?configure the Authentik admin subject in .env.dev}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?configure the Authentik client in .env.dev}
-      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?configure the Authentik issuer in .env.dev}
+      OIDC_ACCESS_TOKEN_AUDIENCE: ${OIDC_ACCESS_TOKEN_AUDIENCE:?run make dev-up to generate local settings}
+      OIDC_BOOTSTRAP_ADMIN_SUBJECTS: ${OIDC_BOOTSTRAP_ADMIN_SUBJECTS:?run make dev-up to generate local settings}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?run make dev-up to generate local settings}
       VAULT_ADDRESS: http://127.0.0.1:8200
       VAULT_ADMIN_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:?run make dev-up to generate local settings}
     network_mode: service:authentik
     restart: unless-stopped
     stop_grace_period: 20s
+
+  admin:
+    profiles: ["app"]
+    build:
+      context: ./apps/admin
+      dockerfile: Dockerfile.dev
+    depends_on:
+      gateway:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:5173/'), fetch('http://127.0.0.1:8080/readyz')]).then((responses) => process.exit(responses.every((response) => response.ok) ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    network_mode: service:authentik
+    restart: unless-stopped
 
 volumes:
   authentik-database:

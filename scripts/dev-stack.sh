@@ -44,6 +44,29 @@ prepare_environment() {
             exit 1
         fi
         chmod 600 "$env_file"
+        if grep -q '^DEV_ADMIN_PASSWORD=' "$env_file"; then
+            if ! grep -q '^DEV_ADMIN_PASSWORD=.' "$env_file"; then
+                echo ".env.dev contains an empty DEV_ADMIN_PASSWORD; refusing to start the stack." >&2
+                exit 1
+            fi
+        else
+            command -v openssl >/dev/null 2>&1 || {
+                echo "OpenSSL is required to generate the local development admin password." >&2
+                exit 1
+            }
+            dev_admin_password=$(openssl rand -hex 24)
+            printf 'DEV_ADMIN_PASSWORD=%s\n' "$dev_admin_password" >> "$env_file"
+            unset dev_admin_password
+        fi
+        if grep -q '^OIDC_REDIRECT_URI=' "$env_file"; then
+            if ! grep -q '^OIDC_REDIRECT_URI=.' "$env_file"; then
+                echo ".env.dev contains an empty OIDC_REDIRECT_URI; refusing to start the stack." >&2
+                exit 1
+            fi
+        else
+            printf 'OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback\n' >> "$env_file"
+        fi
+        chmod 600 "$env_file"
         return
     fi
 
@@ -58,6 +81,7 @@ prepare_environment() {
     target_mysql_password=$(openssl rand -hex 32)
     authentik_secret_key=$(openssl rand -hex 48)
     authentik_bootstrap_password=$(openssl rand -hex 24)
+    dev_admin_password=$(openssl rand -hex 24)
     vault_root_token=$(openssl rand -hex 32)
 
     cat > "$env_file" <<EOF
@@ -67,15 +91,17 @@ TARGET_POSTGRES_PASSWORD=$target_postgres_password
 TARGET_MYSQL_PASSWORD=$target_mysql_password
 AUTHENTIK_SECRET_KEY=$authentik_secret_key
 AUTHENTIK_BOOTSTRAP_PASSWORD=$authentik_bootstrap_password
+DEV_ADMIN_PASSWORD=$dev_admin_password
 VAULT_DEV_ROOT_TOKEN_ID=$vault_root_token
 OIDC_ISSUER_URL=http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/
 OIDC_CLIENT_ID=sql-mcp-gateway-dev
+OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback
 OIDC_ACCESS_TOKEN_AUDIENCE=sql-mcp-gateway-dev
 OIDC_BOOTSTRAP_ADMIN_SUBJECTS=dev-admin
 EOF
     chmod 600 "$env_file"
     unset control_db_password authentik_db_password target_postgres_password target_mysql_password
-    unset authentik_secret_key authentik_bootstrap_password vault_root_token
+    unset authentik_secret_key authentik_bootstrap_password dev_admin_password vault_root_token
     echo "Created owner-only .env.dev with fresh local-only credentials; existing files are never overwritten."
 }
 
@@ -209,16 +235,16 @@ case "${1:-}" in
         compose config --quiet
         compose --profile app config --quiet
         start_infrastructure
-        echo "Local dependencies are running. Configure the Authentik OIDC application before 'make dev-app'."
+        echo "Local dependencies and the Authentik OIDC application are ready. Run 'make dev-app' to start the gateway and admin UI."
         ;;
     app)
-        require_environment
+        prepare_environment
         prepare_tls
         prepare_runtime_environment
         compose --profile app config --quiet
         start_infrastructure
-        compose --profile app up --detach --build --wait gateway
-        echo "Gateway is running on http://127.0.0.1:8080. Start the admin UI with 'make admin-dev'."
+        compose --profile app up --detach --build --wait gateway admin
+        echo "Gateway is running on http://127.0.0.1:8080 and admin UI on http://127.0.0.1:5173."
         ;;
     status)
         require_environment
