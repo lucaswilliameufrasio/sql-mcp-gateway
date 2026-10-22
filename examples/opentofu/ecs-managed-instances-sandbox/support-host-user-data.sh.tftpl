@@ -1,0 +1,19 @@
+#!/bin/bash
+set -Eeuo pipefail
+umask 077
+
+exec > >(tee -a /var/log/sqlgw-sandbox-bootstrap.log | logger -t sqlgw-sandbox-bootstrap) 2>&1
+
+export AWS_REGION="${aws_region}"
+readonly root_dir=/opt/sqlgw-sandbox
+readonly bootstrap_script="$root_dir/bootstrap.sh"
+
+dnf install -y awscli
+install -d -m 0700 "$root_dir"
+aws s3 cp \
+  "s3://${bootstrap_bucket}/${bootstrap_key_prefix}/bootstrap.sh" \
+  "$bootstrap_script" \
+  --region "$AWS_REGION" \
+  --quiet
+chmod 0700 "$bootstrap_script"
+exec "$bootstrap_script"

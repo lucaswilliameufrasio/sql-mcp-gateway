@@ -1,0 +1,22 @@
+auth.${domain} {
+	tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
+	reverse_proxy authentik:9000
+}
+
+vault.${domain} {
+	tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
+	reverse_proxy vault:8200
+}
+
+gateway.${domain} {
+	tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
+
+	@api path /v1/* /mcp /health /readyz
+	handle @api {
+		reverse_proxy http://${alb_dns_name}
+	}
+
+	handle {
+		reverse_proxy admin:3000
+	}
+}
