@@ -1,0 +1,257 @@
+services:
+  authentik-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_DB_PASSWORD:?run make dev-up to generate local settings}
+      POSTGRES_USER: authentik
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    volumes:
+      - authentik-database:/var/lib/postgresql/data
+    networks:
+      dev:
+        aliases:
+          - authentik-postgres
+
+  control-postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: sql_mcp_gateway
+      POSTGRES_PASSWORD: ${CONTROL_DB_PASSWORD:?run make dev-up to generate local settings}
+      POSTGRES_USER: sqlgateway
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sqlgateway -d sql_mcp_gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    volumes:
+      - control-database:/var/lib/postgresql/data
+    networks:
+      dev:
+        aliases:
+          - control-postgres
+
+  target-postgres:
+    image: postgres:17.6-alpine
+    entrypoint: ["/bin/sh", "/scripts/postgres-dev-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/run/postgresql/dev-tls/server.crt
+      - -c
+      - ssl_key_file=/var/run/postgresql/dev-tls/server.key
+    environment:
+      POSTGRES_DB: sql_mcp_gateway_dev
+      POSTGRES_PASSWORD: ${TARGET_POSTGRES_PASSWORD:?run make dev-up to generate local settings}
+      POSTGRES_USER: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sql_mcp_gateway_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    volumes:
+      - target-postgres-data:/var/lib/postgresql/data
+      - ./.dev/tls/certs:/certs:ro
+      - ./scripts/postgres-dev-entrypoint.sh:/scripts/postgres-dev-entrypoint.sh:ro
+    networks:
+      dev:
+        aliases:
+          - target-postgres
+
+  target-mysql:
+    image: mysql:8.4.7
+    entrypoint: ["/bin/sh", "/scripts/mysql-dev-entrypoint.sh"]
+    command:
+      - mysqld
+      - --require-secure-transport=ON
+      - --ssl-ca=/var/lib/mysql-dev-tls/ca.crt
+      - --ssl-cert=/var/lib/mysql-dev-tls/server.crt
+      - --ssl-key=/var/lib/mysql-dev-tls/server.key
+    environment:
+      MYSQL_DATABASE: sql_mcp_gateway_dev
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_ROOT_PASSWORD: ${TARGET_MYSQL_PASSWORD:?run make dev-up to generate local settings}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysqladmin ping --protocol=tcp --host=127.0.0.1 --user=root --silent
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+    volumes:
+      - target-mysql-data:/var/lib/mysql
+      - ./.dev/tls/certs:/certs:ro
+      - ./scripts/mysql-dev-entrypoint.sh:/scripts/mysql-dev-entrypoint.sh:ro
+    networks:
+      dev:
+        aliases:
+          - target-mysql
+
+  authentik:
+    image: ghcr.io/goauthentik/server:2026.8.4
+    command: ["server"]
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?run make dev-up to generate local settings}
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run make dev-up to generate local settings}
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/-/health/ready/', timeout=3)
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:8200:8200"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:5173:5173"
+    restart: unless-stopped
+    shm_size: 512mb
+    volumes:
+      - authentik-data:/data
+    networks:
+      dev:
+        aliases:
+          - authentik
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.8.4
+    command: ["worker"]
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+    environment:
+      AUTHENTIK_BOOTSTRAP_EMAIL: dev-admin@localhost
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run make dev-up to generate local settings}
+      DEV_ADMIN_PASSWORD: ${DEV_ADMIN_PASSWORD:?run make dev-up to generate local settings}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:?run make dev-up to generate local settings}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?run make dev-up to generate local settings}
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?run make dev-up to generate local settings}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?run make dev-up to generate local settings}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          ak healthcheck && python3 -c "import os, urllib.parse, urllib.request; issuer=urllib.parse.urlsplit(os.environ['OIDC_ISSUER_URL']); path=issuer.path.rstrip('/') + '/.well-known/openid-configuration'; url=urllib.parse.urlunsplit(('http', 'authentik:9000', path, '', '')); urllib.request.urlopen(url, timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+    shm_size: 512mb
+    user: root
+    volumes:
+      - authentik-data:/data
+      - ./deploy/authentik/sql-mcp-gateway-dev.yaml:/blueprints/sql-mcp-gateway-dev.yaml:ro
+    networks:
+      dev:
+        aliases:
+          - authentik-worker
+
+  vault:
+    image: hashicorp/vault:1.21.4
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    depends_on:
+      authentik:
+        condition: service_started
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:?run make dev-up to generate local settings}
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:?run make dev-up to generate local settings}
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    network_mode: service:authentik
+    restart: unless-stopped
+    volumes:
+      - ./scripts/dev-vault-bootstrap.sh:/scripts/dev-vault-bootstrap.sh:ro
+      - ./.dev/vault-runtime:/vault-runtime:rw
+
+  gateway:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: deploy/docker/gateway.Dockerfile
+    env_file:
+      - ./.dev/vault-runtime/runtime.env
+    depends_on:
+      authentik:
+        condition: service_healthy
+      authentik-worker:
+        condition: service_healthy
+      control-postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    environment:
+      BIND_ADDRESS: 0.0.0.0:8080
+      CONTROL_DATABASE_URL: postgres://sqlgateway:${CONTROL_DB_PASSWORD:?run make dev-up to generate local settings}@control-postgres:5432/sql_mcp_gateway?sslmode=disable
+      MAX_QUERY_DURATION_SECONDS: "30"
+      MAX_QUERY_ROWS: "200"
+      OIDC_ACCESS_TOKEN_AUDIENCE: ${OIDC_ACCESS_TOKEN_AUDIENCE:?run make dev-up to generate local settings}
+      OIDC_BOOTSTRAP_ADMIN_SUBJECTS: ${OIDC_BOOTSTRAP_ADMIN_SUBJECTS:?run make dev-up to generate local settings}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?run make dev-up to generate local settings}
+      VAULT_ADDRESS: http://127.0.0.1:8200
+      VAULT_ADMIN_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:?run make dev-up to generate local settings}
+    network_mode: service:authentik
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  admin:
+    profiles: ["app"]
+    build:
+      context: ./apps/admin
+      dockerfile: Dockerfile.dev
+    depends_on:
+      gateway:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:5173/'), fetch('http://127.0.0.1:8080/readyz')]).then((responses) => process.exit(responses.every((response) => response.ok) ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    network_mode: service:authentik
+    restart: unless-stopped
+
+volumes:
+  authentik-database:
+  authentik-data:
+  control-database:
+  target-mysql-data:
+  target-postgres-data:
+
+networks:
+  dev:
+    driver: bridge

@@ -16,9 +16,11 @@ The HTTP endpoint currently handles authenticated JSON-RPC requests with `POST /
 
 ## Local first run
 
-This is not a one-command demo: the gateway needs a control-plane PostgreSQL database, an OIDC provider, and Vault configured with the database secrets engines. It also needs private-network access to each database you register. These services are intentionally not started with the app.
+The gateway needs a control-plane PostgreSQL database, an OIDC provider, and Vault configured with the database secrets engines. Choose the isolated local Compose stack for a development demo, or connect the host-run app to services you already operate.
 
-### 1. Prepare the local project
+### Option A: isolated local Compose stack
+
+#### 1. Prepare the project and start local services
 
 Install the stable Rust toolchain (edition 2024), Node.js, and pnpm, then run `make setup` from the repository root:
 
@@ -28,7 +30,49 @@ make setup
 
 The target fetches the locked Rust dependencies, installs the SQLx CLI if needed, installs the admin UI dependencies, and creates `.env` from `.env.example` only if `.env` does not already exist. It does not install Rust, Node.js, or pnpm, and it does not start or provision PostgreSQL, OIDC, or Vault.
 
-### 2. Configure local services
+Start the separate development-only Compose services:
+
+```sh
+make dev-up
+```
+
+This creates `.env.dev` with owner-only permissions, `.dev/vault-runtime/runtime.env` for Vault's scoped runtime token, and `.dev/tls/` with local-only database certificates. These paths are ignored by Git; the existing `.env` is not read or overwritten. The stack uses Authentik, Vault dev mode, a dedicated control database, and TLS-enabled PostgreSQL/MySQL targets. It publishes Authentik, Vault, the gateway, and the admin UI only on `127.0.0.1`; the database targets are reachable only inside the Compose network. The stack defaults to Docker's `rootless` context; set `DOCKER_CONTEXT` only if you deliberately selected another context.
+
+#### 2. Authentik OIDC configuration (automatic)
+
+The Authentik worker imports `deploy/authentik/sql-mcp-gateway-dev.yaml` from the Compose stack. It creates the `sql-mcp-gateway-dev` public Authorization Code application/provider and the `dev-admin` test user, assigns that user to the application, selects Authentik's asymmetric self-signed key, and configures the `openid`, `profile`, and `email` scopes. The gateway's admin subject is `dev-admin`.
+
+The OIDC defaults are issuer `http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/`, client ID and audience `sql-mcp-gateway-dev`, and redirect URI `http://127.0.0.1:5173/auth/callback`. The browser client sends S256 PKCE; Authentik 2026.8 validates PKCE when sent but does not provide a server-side option to require it. The Authentik worker healthcheck waits for issuer discovery, and the gateway depends on that healthcheck. No Authentik UI setup is required.
+
+The generated `.env.dev` contains separate local-only passwords for `akadmin` and `dev-admin`. Use the `dev-admin` password from that owner-only file when signing in to the gateway; never paste either password into chat or commit them.
+
+#### 3. Start the gateway and admin UI
+
+Start the gateway and admin UI together in Compose:
+
+```sh
+make dev-app
+```
+
+Open <http://127.0.0.1:5173> and sign in as `dev-admin`. `make dev-status` shows service status. Use `make dev-pause` and `make dev-resume` to pause/resume the stack without losing Vault's in-memory development state. `make admin-dev` remains available for the separate workflow that runs an admin UI on the host against services you already operate.
+
+In **Databases**, register either sample target using the Compose service hostname and port: `target-postgres:5432` or `target-mysql:3306`. Use database `sql_mcp_gateway_dev`, the matching generated root credential from `.env.dev`, and the CA certificate at `.dev/tls/certs/ca.crt`. The local credentials and self-signed certificates are for this stack only.
+
+The stack is not production-ready. Vault runs in dev mode with an in-memory store, the local Authentik bootstrap password is stored in `.env.dev`, and database TLS uses a local CA. Recreating Vault loses its database role configuration; targets must be registered again. Avoid Compose volume-removal commands unless you intentionally want to delete local database data.
+
+### Option B: use services you already operate
+
+#### 1. Prepare the local project
+
+Run `make setup` from the repository root after installing the stable Rust toolchain (edition 2024), Node.js, and pnpm:
+
+```sh
+make setup
+```
+
+This prepares repository dependencies and creates `.env` from `.env.example` only if `.env` does not already exist. It does not install language runtimes or provision services.
+
+#### 2. Configure local services
 
 Review `.env` and fill it using your local secret-management workflow. `make setup` never overwrites an existing `.env`.
 
@@ -42,7 +86,7 @@ For local development only, the gateway permits plain HTTP OIDC/Vault URLs on lo
 http://127.0.0.1:5173/auth/callback
 ```
 
-### 3. Create/update the control-plane schema
+#### 3. Create/update the control-plane schema
 
 From the repository root:
 
@@ -53,7 +97,7 @@ make migrate-status
 
 The gateway also applies embedded migrations at startup. The explicit migration step lets you check connectivity and schema state before starting the processes.
 
-### 4. Start the gateway and admin UI
+#### 4. Start the gateway and admin UI
 
 In terminal 1, from the repository root:
 
@@ -74,13 +118,13 @@ curl -i http://127.0.0.1:8080/health
 curl -i http://127.0.0.1:8080/readyz
 ```
 
-### 5. Sign in, register a database, and grant access
+#### 5. Sign in, register a database, and grant access
 
 1. Sign in through the configured OIDC provider using the subject listed in `OIDC_BOOTSTRAP_ADMIN_SUBJECTS`. Its first authenticated request creates the principal and bootstraps it as a platform administrator.
 2. In **Databases**, register a reachable PostgreSQL or MySQL target. The gateway validates the connection and sends the supplied database administrator credential to Vault; it does not retain that password in its control database.
 3. Each user must sign in at least once so the gateway can create their principal. In **Access**, select that person and database, then grant `read` or `write`. No database access is granted by default; `write` includes read access and adds DML, but not DDL.
 
-### 6. Connect an MCP client
+#### 6. Connect an MCP client
 
 Configure the client to send authenticated JSON-RPC `POST` requests to:
 

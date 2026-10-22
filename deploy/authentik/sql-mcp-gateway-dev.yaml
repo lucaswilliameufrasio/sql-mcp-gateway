@@ -1,0 +1,83 @@
+version: 1
+metadata:
+  name: SQL MCP Gateway development OIDC
+entries:
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - Brand
+      required: true
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - Provider authorization flow (explicit consent)
+      required: true
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: Default - Provider invalidation flow
+      required: true
+  - model: authentik_blueprints.metaapplyblueprint
+    attrs:
+      identifiers:
+        name: System - OAuth2 Provider - Scopes
+      required: true
+  - model: authentik_providers_oauth2.oauth2provider
+    state: present
+    id: sql-mcp-gateway-dev-provider
+    identifiers:
+      name: SQL MCP Gateway Development
+    attrs:
+      authorization_flow: !Find
+        - authentik_flows.flow
+        - [slug, default-provider-authorization-explicit-consent]
+      invalidation_flow: !Find
+        - authentik_flows.flow
+        - [slug, default-provider-invalidation-flow]
+      client_type: public
+      grant_types:
+        - authorization_code
+      client_id: !Env OIDC_CLIENT_ID
+      redirect_uris:
+        - matching_mode: strict
+          url: !Env OIDC_REDIRECT_URI
+          redirect_uri_type: authorization
+      signing_key: !Find
+        - authentik_crypto.certificatekeypair
+        - [name, authentik Self-signed Certificate]
+      sub_mode: user_username
+      property_mappings:
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, openid]
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, profile]
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, email]
+  - model: authentik_core.application
+    state: present
+    id: sql-mcp-gateway-dev-application
+    identifiers:
+      slug: sql-mcp-gateway-dev
+    attrs:
+      name: SQL MCP Gateway Development
+      provider: !KeyOf sql-mcp-gateway-dev-provider
+  - model: authentik_core.user
+    state: present
+    id: sql-mcp-gateway-dev-admin
+    identifiers:
+      username: dev-admin
+    attrs:
+      name: SQL MCP Gateway Development Admin
+      email: dev-admin@localhost
+      is_active: true
+      password: !Env DEV_ADMIN_PASSWORD
+  - model: authentik_policies.policybinding
+    state: present
+    identifiers:
+      target: !KeyOf sql-mcp-gateway-dev-application
+      order: 0
+    attrs:
+      user: !KeyOf sql-mcp-gateway-dev-admin

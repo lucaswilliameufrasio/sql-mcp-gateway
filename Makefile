@@ -1,4 +1,4 @@
-.PHONY: setup migrate-create migrate-up migrate-down migrate-status fmt lint test test-integration build run run-stdio admin-dev
+.PHONY: setup migrate-create migrate-up migrate-down migrate-status fmt lint test test-integration build run run-stdio admin-dev dev-up dev-app dev-status dev-pause dev-resume
 
 setup:
 	@command -v cargo >/dev/null 2>&1 || { echo "Rust/Cargo is required; install the stable Rust toolchain first." >&2; exit 1; }
@@ -61,3 +61,18 @@ run-stdio:
 
 admin-dev:
 	cd apps/admin && pnpm dev
+
+dev-up:
+	sh scripts/dev-stack.sh up
+
+dev-app:
+	sh scripts/dev-stack.sh app
+
+dev-status:
+	sh scripts/dev-stack.sh status
+
+dev-pause:
+	sh scripts/dev-stack.sh pause
+
+dev-resume:
+	sh scripts/dev-stack.sh resume
