@@ -1,0 +1,276 @@
+#!/bin/bash
+set -Eeuo pipefail
+umask 077
+
+exec > >(tee -a /var/log/sqlgw-sandbox-bootstrap.log | logger -t sqlgw-sandbox-bootstrap) 2>&1
+
+readonly root_dir=/opt/sqlgw-sandbox
+readonly compose_dir="$root_dir/compose"
+readonly env_file="$compose_dir/.env"
+readonly project_name=sqlgw-sandbox
+readonly bucket="${bootstrap_bucket}"
+readonly key_prefix="${bootstrap_key_prefix}"
+
+mkdir -p "$compose_dir/deploy/authentik" "$compose_dir/scripts" "$compose_dir/tls" "$compose_dir/vault-runtime"
+chmod 700 "$root_dir" "$compose_dir" "$compose_dir/tls" "$compose_dir/vault-runtime"
+
+dnf install -y docker awscli openssl jq curl-minimal postgresql15
+systemctl enable --now docker
+
+if ! docker compose version >/dev/null 2>&1; then
+    install -d -m 0755 /usr/local/lib/docker/cli-plugins
+    curl --fail --silent --show-error --location \
+      https://github.com/docker/compose/releases/download/v2.39.2/docker-compose-linux-x86_64 \
+      --output /usr/local/lib/docker/cli-plugins/docker-compose
+    chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+fi
+
+aws s3 cp "s3://$bucket/$key_prefix/config.json" "$root_dir/config.json" --region "$AWS_REGION" --quiet
+aws s3 cp "s3://$bucket/$key_prefix/compose.yaml" "$compose_dir/compose.yaml" --region "$AWS_REGION" --quiet
+aws s3 cp "s3://$bucket/$key_prefix/Caddyfile" "$compose_dir/Caddyfile" --region "$AWS_REGION" --quiet
+aws s3 cp "s3://$bucket/$key_prefix/dev-vault-bootstrap.sh" "$compose_dir/scripts/dev-vault-bootstrap.sh" --region "$AWS_REGION" --quiet
+aws s3 cp "s3://$bucket/$key_prefix/authentik-blueprint.yaml" "$compose_dir/deploy/authentik/sql-mcp-gateway-dev.yaml" --region "$AWS_REGION" --quiet
+chmod 600 "$root_dir/config.json" "$compose_dir/scripts/dev-vault-bootstrap.sh"
+# This configuration contains no credentials. The Authentik worker may drop
+# privileges internally, so it must be readable through the read-only mount.
+chmod 0644 "$compose_dir/deploy/authentik/sql-mcp-gateway-dev.yaml"
+
+if [ ! -f "$env_file" ]; then
+  python3 - "$root_dir/config.json" "$env_file" <<'PYTHON'
+import json
+import shlex
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as config_file:
+    config = json.load(config_file)
+
+domain = config["domain"]
+values = {
+    "AWS_REGION": config["aws_region"],
+    "ALB_DNS_NAME": config["alb_dns_name"],
+    "ADMIN_IMAGE": config["admin_image"],
+    "AUTHENTIK_HOST_BROWSER": f"https://auth.{domain}",
+    "OIDC_ISSUER_URL": f"https://auth.{domain}/application/o/sql-mcp-gateway-dev/",
+    "OIDC_CLIENT_ID": "sql-mcp-gateway-dev",
+    "OIDC_REDIRECT_URI": f"https://gateway.{domain}/auth/callback",
+    "OIDC_ACCESS_TOKEN_AUDIENCE": "sql-mcp-gateway-dev",
+    "OIDC_BOOTSTRAP_ADMIN_SUBJECTS": "dev-admin",
+}
+
+with open(sys.argv[2], "w", encoding="utf-8") as env_file:
+    for name, value in values.items():
+        env_file.write(f"{name}={shlex.quote(str(value))}\n")
+PYTHON
+
+  authentik_db_password=$(openssl rand -hex 32)
+  authentik_secret_key=$(openssl rand -hex 48)
+  authentik_bootstrap_password=$(openssl rand -hex 24)
+  dev_admin_password=$(openssl rand -hex 24)
+  vault_root_token=$(openssl rand -hex 32)
+
+  cat >> "$env_file" <<ENVIRONMENT
+AUTHENTIK_POSTGRESQL__PASSWORD=$authentik_db_password
+AUTHENTIK_SECRET_KEY=$authentik_secret_key
+AUTHENTIK_BOOTSTRAP_PASSWORD=$authentik_bootstrap_password
+DEV_ADMIN_PASSWORD=$dev_admin_password
+VAULT_DEV_ROOT_TOKEN_ID=$vault_root_token
+ENVIRONMENT
+  unset authentik_db_password authentik_secret_key authentik_bootstrap_password dev_admin_password
+  chmod 600 "$env_file"
+else
+  # A partial bootstrap may already have initialized Authentik's database and
+  # Vault with these values. Preserve them instead of rotating credentials.
+  chmod 600 "$env_file"
+  vault_root_token=$(sed -n 's/^VAULT_DEV_ROOT_TOKEN_ID=//p' "$env_file")
+fi
+
+case "$vault_root_token" in
+  ''|*[!0123456789abcdef]*)
+    echo "Existing Vault bootstrap token is missing or malformed." >&2
+    exit 1
+    ;;
+esac
+if [ "$${#vault_root_token}" -ne 64 ]; then
+  echo "Existing Vault bootstrap token is missing or malformed." >&2
+  exit 1
+fi
+
+tls_files=(
+  "$compose_dir/tls/ca.key"
+  "$compose_dir/tls/ca.crt"
+  "$compose_dir/tls/server.key"
+  "$compose_dir/tls/server.crt"
+)
+tls_material_present=0
+tls_material_complete=1
+for tls_file in "$${tls_files[@]}"; do
+  if [ -e "$tls_file" ]; then
+    tls_material_present=1
+  fi
+  if [ ! -s "$tls_file" ]; then
+    tls_material_complete=0
+  fi
+done
+
+if [ "$tls_material_complete" -eq 1 ]; then
+  # Keep the CA already published to SSM and trusted by any running services.
+  chmod 600 "$compose_dir/tls/ca.key" "$compose_dir/tls/server.key"
+  chmod 644 "$compose_dir/tls/ca.crt" "$compose_dir/tls/server.crt"
+elif [ "$tls_material_present" -eq 1 ]; then
+  echo "TLS material is incomplete; refusing to replace an existing test CA." >&2
+  exit 1
+else
+  openssl req -x509 -newkey rsa:3072 -nodes \
+    -keyout "$compose_dir/tls/ca.key" \
+    -out "$compose_dir/tls/ca.crt" \
+    -days 30 \
+    -subj "/CN=SQL MCP Gateway ${sandbox_suffix} test CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    >/dev/null 2>&1
+
+  openssl req -new -newkey rsa:2048 -nodes \
+    -keyout "$compose_dir/tls/server.key" \
+    -out "$root_dir/server.csr" \
+    -subj "/CN=auth.${domain}" \
+    >/dev/null 2>&1
+  cat > "$root_dir/server.ext" <<CERTIFICATE_EXTENSIONS
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:auth.${domain},DNS:vault.${domain},DNS:gateway.${domain}
+CERTIFICATE_EXTENSIONS
+  openssl x509 -req \
+    -in "$root_dir/server.csr" \
+    -CA "$compose_dir/tls/ca.crt" \
+    -CAkey "$compose_dir/tls/ca.key" \
+    -set_serial 1 \
+    -out "$compose_dir/tls/server.crt" \
+    -days 30 \
+    -extfile "$root_dir/server.ext" \
+    >/dev/null 2>&1
+  chmod 600 "$compose_dir/tls/ca.key" "$compose_dir/tls/server.key"
+  chmod 644 "$compose_dir/tls/ca.crt" "$compose_dir/tls/server.crt"
+  rm -f "$root_dir/server.csr" "$root_dir/server.ext"
+fi
+
+install -m 0644 "$compose_dir/tls/ca.crt" /etc/pki/ca-trust/source/anchors/sqlgw-sandbox-ca.crt
+update-ca-trust extract
+ca_parameter_name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ca_parameter_name"])' "$root_dir/config.json")
+aws ssm put-parameter \
+  --name "$ca_parameter_name" \
+  --type String \
+  --overwrite \
+  --value "file://$compose_dir/tls/ca.crt" \
+  --region "$AWS_REGION" \
+  >/dev/null
+
+curl --fail --silent --show-error --location \
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+  --output "$root_dir/rds-global-bundle.pem"
+chmod 0644 "$root_dir/rds-global-bundle.pem"
+install -m 0644 "$root_dir/rds-global-bundle.pem" /etc/pki/ca-trust/source/anchors/aws-rds-global-bundle.crt
+update-ca-trust extract
+
+existing_worker_id=$(docker compose --project-name "$project_name" --env-file "$env_file" \
+  --file "$compose_dir/compose.yaml" ps -q authentik-worker)
+if [ -n "$existing_worker_id" ]; then
+  docker compose --project-name "$project_name" --env-file "$env_file" \
+    --file "$compose_dir/compose.yaml" restart authentik-worker >/dev/null
+fi
+
+docker compose --project-name "$project_name" --env-file "$env_file" \
+  --file "$compose_dir/compose.yaml" up --detach --wait \
+  authentik-postgres authentik authentik-worker vault caddy
+
+# Only the one-time root Vault CLI bootstrap writes this token file; the Vault
+# server process does not need to access the bind-mounted directory.
+chmod 700 "$compose_dir/vault-runtime"
+
+for attempt in $(seq 1 60); do
+  if docker compose --project-name "$project_name" --env-file "$env_file" \
+    --file "$compose_dir/compose.yaml" exec -T vault vault status -address=http://127.0.0.1:8200 >/dev/null 2>&1; then
+    break
+  fi
+  sleep 5
+done
+
+docker compose --project-name "$project_name" --env-file "$env_file" \
+  --file "$compose_dir/compose.yaml" exec -T --user 0:0 vault \
+  /bin/sh /scripts/dev-vault-bootstrap.sh >/dev/null
+
+master_secret_arn=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database_master_secret_arns"]["control_postgres"])' "$root_dir/config.json")
+database_host=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database_endpoints"]["control_postgres"])' "$root_dir/config.json")
+database_name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["control_database_name"])' "$root_dir/config.json")
+master_secret=$(aws secretsmanager get-secret-value --secret-id "$master_secret_arn" --query SecretString --output text --region "$AWS_REGION")
+master_user=$(jq -er '.username' <<< "$master_secret")
+master_password=$(jq -er '.password' <<< "$master_secret")
+control_password=$(openssl rand -hex 32)
+
+database_ready=0
+for attempt in $(seq 1 60); do
+  if PGPASSWORD="$master_password" psql \
+    "host=$database_host port=5432 dbname=$database_name user=$master_user sslmode=verify-full sslrootcert=/etc/pki/tls/certs/ca-bundle.crt" \
+    >/dev/null 2>&1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sqlgateway') THEN
+    CREATE ROLE sqlgateway LOGIN PASSWORD '$control_password';
+  ELSE
+    ALTER ROLE sqlgateway LOGIN PASSWORD '$control_password';
+  END IF;
+END
+\$\$;
+ALTER DATABASE $database_name OWNER TO sqlgateway;
+SQL
+  then
+    database_ready=1
+    break
+  fi
+  sleep 5
+done
+if [ "$database_ready" -ne 1 ]; then
+  echo "Control database bootstrap did not complete." >&2
+  exit 1
+fi
+
+control_url="postgres://sqlgateway:$control_password@$database_host:5432/$database_name?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt"
+printf '%s' "$control_url" > "$root_dir/control-database-url"
+printf '%s' "$vault_root_token" > "$root_dir/vault-admin-token"
+chmod 600 "$root_dir/control-database-url" "$root_dir/vault-admin-token"
+vault_runtime_token=$(sed -n 's/^VAULT_RUNTIME_TOKEN=//p' "$compose_dir/vault-runtime/runtime.env")
+printf '%s' "$vault_runtime_token" > "$root_dir/vault-runtime-token"
+chmod 600 "$root_dir/vault-runtime-token"
+unset master_secret master_user master_password control_password control_url vault_root_token vault_runtime_token
+
+python3 - "$root_dir/config.json" "$root_dir" <<'PYTHON'
+import json
+import pathlib
+import subprocess
+import sys
+
+config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+root = pathlib.Path(sys.argv[2])
+secret_paths = {
+    "control_database_url": "control-database-url",
+    "vault_admin_token": "vault-admin-token",
+    "vault_runtime_token": "vault-runtime-token",
+}
+for name, filename in secret_paths.items():
+    subprocess.run(
+        [
+            "aws", "secretsmanager", "put-secret-value",
+            "--secret-id", config["gateway_secret_arns"][name],
+            "--secret-string", f"file://{root / filename}",
+            "--region", config["aws_region"],
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+PYTHON
+
+rm -f "$root_dir/control-database-url" "$root_dir/vault-admin-token" "$root_dir/vault-runtime-token"
+touch "$root_dir/bootstrap-complete"
+chmod 600 "$root_dir/bootstrap-complete"
+echo "Sandbox support bootstrap completed; bootstrap secret values were not intentionally logged."

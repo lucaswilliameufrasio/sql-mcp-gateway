@@ -6,3 +6,7 @@
 !deploy/
 !deploy/lambda/
 !deploy/lambda/**
+!.dev/
+!.dev/ecs-mi-sandbox/
+!.dev/ecs-mi-sandbox/tls-root-ca.crt
+!.dev/ecs-mi-sandbox/rds-global-bundle.pem

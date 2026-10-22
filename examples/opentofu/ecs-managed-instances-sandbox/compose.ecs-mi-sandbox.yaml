@@ -1,0 +1,151 @@
+services:
+  authentik-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:?missing generated Authentik database password}
+      POSTGRES_USER: authentik
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    volumes:
+      - authentik-database:/var/lib/postgresql/data
+    networks:
+      - sandbox
+
+  authentik:
+    image: ghcr.io/goauthentik/server:2026.8.4
+    command: ["server"]
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:?missing generated Authentik database password}
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?missing generated Authentik secret key}
+      AUTHENTIK_HOST_BROWSER: ${AUTHENTIK_HOST_BROWSER:?missing Authentik browser URL}
+      AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS: 172.30.0.0/24
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/-/health/ready/', timeout=3)
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    restart: unless-stopped
+    shm_size: 512mb
+    volumes:
+      - authentik-data:/data
+    networks:
+      - sandbox
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.8.4
+    command: ["worker"]
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+    environment:
+      AUTHENTIK_BOOTSTRAP_EMAIL: dev-admin@localhost
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?missing generated Authentik bootstrap password}
+      DEV_ADMIN_PASSWORD: ${DEV_ADMIN_PASSWORD:?missing generated test admin password}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?missing OIDC client ID}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:?missing OIDC redirect URI}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:?missing generated Authentik database password}
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?missing generated Authentik secret key}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?missing OIDC issuer URL}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          ak healthcheck && python3 -c "import os, urllib.parse, urllib.request; issuer=urllib.parse.urlsplit(os.environ['OIDC_ISSUER_URL']); path=issuer.path.rstrip('/') + '/.well-known/openid-configuration'; url=urllib.parse.urlunsplit(('http', 'authentik:9000', path, '', '')); urllib.request.urlopen(url, timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+    shm_size: 512mb
+    user: root
+    volumes:
+      - authentik-data:/data
+      - ./deploy/authentik/sql-mcp-gateway-dev.yaml:/blueprints/sql-mcp-gateway-dev.yaml:ro
+    networks:
+      - sandbox
+
+  vault:
+    image: hashicorp/vault:1.21.4
+    command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      VAULT_ADDR: http://127.0.0.1:8200
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:?missing generated Vault root token}
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:?missing generated Vault root token}
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    volumes:
+      - ./scripts/dev-vault-bootstrap.sh:/scripts/dev-vault-bootstrap.sh:ro
+      - ./vault-runtime:/vault-runtime:rw
+    networks:
+      - sandbox
+
+  admin:
+    profiles: ["admin"]
+    image: ${ADMIN_IMAGE:?set the immutable sandbox admin image tag}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - sandbox
+
+  caddy:
+    image: caddy:2.9.1-alpine
+    depends_on:
+      authentik:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    ports:
+      - "443:443"
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tls:/etc/caddy/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - sandbox
+
+volumes:
+  authentik-database:
+  authentik-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  sandbox:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

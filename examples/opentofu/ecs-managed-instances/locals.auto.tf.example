@@ -4,6 +4,7 @@ locals {
   aws_region  = "us-east-1"
   name        = "sql-mcp-gateway-prod"
   environment = "production"
+  sandbox_id  = ""
 
   # Build and push deploy/docker/gateway.Dockerfile before creating the service.
   # Use the immutable image digest returned by ECR, not a mutable tag.
@@ -33,6 +34,9 @@ locals {
   task_memory_mib            = 1024
   cpu_architecture           = "X86_64"
   instance_storage_size_gib  = 30
-  desired_count              = 2
-  log_retention_in_days      = 30
+  # Optional. Leave empty for AWS cost optimization across compatible current generations.
+  # The temporary sandbox sets this to ["c7i.large"] to cap instance selection.
+  allowed_instance_types = []
+  desired_count          = 2
+  log_retention_in_days  = 30
 }

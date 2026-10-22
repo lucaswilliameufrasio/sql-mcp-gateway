@@ -43,6 +43,7 @@ lint:
 	cd apps/admin && pnpm check && pnpm lint
 
 test:
+	sh scripts/test-ecs-mi-sandbox-bootstrap.sh
 	cargo test --workspace
 	cd apps/admin && pnpm test
 

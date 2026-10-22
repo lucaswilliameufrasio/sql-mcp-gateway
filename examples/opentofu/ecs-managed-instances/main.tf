@@ -13,17 +13,40 @@ provider "aws" {
   region = local.aws_region
 
   default_tags {
-    tags = {
-      Application = "sql-mcp-gateway"
-      Environment = local.environment
-      ManagedBy   = "OpenTofu"
-    }
+    tags = merge(
+      {
+        Application = "sql-mcp-gateway"
+        Environment = local.environment
+        ManagedBy   = "OpenTofu"
+      },
+      local.sandbox_id == "" ? {} : { SandboxId = local.sandbox_id },
+    )
   }
 }
 
 data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
 
 locals {
+  ecs_tasks_assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:ecs:${local.aws_region}:${data.aws_caller_identity.current.account_id}:*"
+        }
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+
   required_secret_arns = [
     local.control_database_url_secret_arn,
     local.vault_admin_token_secret_arn,
@@ -88,16 +111,7 @@ resource "aws_iam_instance_profile" "instance" {
 resource "aws_iam_role" "task_execution" {
   name = "${local.name}-task-execution"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "ecs-tasks.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
-  })
+  assume_role_policy = local.ecs_tasks_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "task_execution" {
@@ -138,16 +152,7 @@ resource "aws_iam_role_policy" "decrypt_secrets" {
 resource "aws_iam_role" "task" {
   name = "${local.name}-task"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "ecs-tasks.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
-  })
+  assume_role_policy = local.ecs_tasks_assume_role_policy
 }
 
 resource "aws_cloudwatch_log_group" "gateway" {
@@ -188,7 +193,7 @@ resource "aws_ecs_capacity_provider" "managed_instances" {
           max = 32768
         }
 
-        instance_generations = ["current"]
+        allowed_instance_types = length(local.allowed_instance_types) > 0 ? local.allowed_instance_types : null
       }
     }
   }
@@ -197,16 +202,6 @@ resource "aws_ecs_capacity_provider" "managed_instances" {
     aws_iam_role_policy_attachment.infrastructure,
     aws_iam_role_policy_attachment.instance,
   ]
-}
-
-resource "aws_ecs_cluster_capacity_providers" "gateway" {
-  cluster_name       = aws_ecs_cluster.gateway.name
-  capacity_providers = [aws_ecs_capacity_provider.managed_instances.name]
-
-  default_capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.managed_instances.name
-    weight            = 1
-  }
 }
 
 resource "aws_ecs_task_definition" "gateway" {
@@ -275,6 +270,7 @@ resource "aws_ecs_service" "gateway" {
   cluster                            = aws_ecs_cluster.gateway.id
   task_definition                    = aws_ecs_task_definition.gateway.arn
   desired_count                      = local.desired_count
+  propagate_tags                     = "SERVICE"
   health_check_grace_period_seconds  = 90
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
@@ -299,11 +295,6 @@ resource "aws_ecs_service" "gateway" {
     target_group_arn = local.private_alb_target_group_arn
     container_name   = "sql-mcp-gateway"
     container_port   = 8080
-  }
-
-  ordered_placement_strategy {
-    type  = "spread"
-    field = "attribute:ecs.availability-zone"
   }
 
   lifecycle {
@@ -351,5 +342,4 @@ resource "aws_ecs_service" "gateway" {
     }
   }
 
-  depends_on = [aws_ecs_cluster_capacity_providers.gateway]
 }
