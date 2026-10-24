@@ -15,6 +15,22 @@ Have these ready:
 
 ## Deploy the application
 
+### Container deployment with Docker Compose
+
+For a host where Docker Compose is already operated, [`deploy/docker/compose.production.yaml`](../../deploy/docker/compose.production.yaml) runs the production gateway and admin images. It is separate from `compose.dev.yaml` and does not start a database, OIDC provider, Vault, or reverse proxy; those remain separately managed production dependencies. The gateway and admin ports bind only to host loopback for the existing Caddy/Nginx proxy configuration below.
+
+Create root-owned runtime env files at `/etc/sql-mcp-gateway/gateway.env` and `/etc/sql-mcp-gateway/admin.env` using the approved secret-delivery workflow. The gateway file needs the variables listed under [Deliver runtime configuration](#3-deliver-runtime-configuration); the admin file needs `ORIGIN` set to the externally visible HTTPS origin, for example `https://sql-gateway.example.internal`. Set each file to mode `0640`, owned by `root` and readable only by the account that operates Docker. Do not put secret values in the repository or a Compose `.env` file.
+
+From a checkout/release directory on the host, build and start the services:
+
+```sh
+docker compose -f deploy/docker/compose.production.yaml config --quiet
+docker compose -f deploy/docker/compose.production.yaml build --pull
+docker compose -f deploy/docker/compose.production.yaml up --detach --wait
+```
+
+Use immutable release tags for `GATEWAY_IMAGE` and `ADMIN_IMAGE` when building a release. The Compose file exposes only `127.0.0.1:8080` and `127.0.0.1:3000`; keep TLS termination and external routing in the existing host proxy. Follow the health checks, onboarding, upgrade, and rollback guidance below. `docker compose down` stops the application but preserves images; do not add volume-removal flags to routine deployment commands.
+
 ### 1. Build release artifacts
 
 From the repository root on the build host:

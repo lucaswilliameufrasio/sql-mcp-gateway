@@ -1,0 +1,60 @@
+name: sql-mcp-gateway
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-sql-mcp-gateway:local}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/gateway.Dockerfile
+    env_file:
+      - ${GATEWAY_ENV_FILE:-/etc/sql-mcp-gateway/gateway.env}
+    environment:
+      BIND_ADDRESS: 0.0.0.0:8080
+    ports:
+      - 127.0.0.1:8080:8080
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  admin:
+    image: ${ADMIN_IMAGE:-sql-mcp-gateway-admin:local}
+    build:
+      context: ../../apps/admin
+      dockerfile: Dockerfile.production
+    env_file:
+      - ${ADMIN_ENV_FILE:-/etc/sql-mcp-gateway/admin.env}
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      NODE_ENV: production
+    ports:
+      - 127.0.0.1:3000:3000
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
