@@ -18,6 +18,11 @@ Initialization is followed by `notifications/initialized`; subsequent requests
 must carry the session and negotiated version. At most 16 live sessions per
 principal are admitted. Browser Origin must match the public gateway origin.
 
+For the MCP transport's backwards-compatibility rule, the negotiated version
+stored in the session also identifies the version if a client omits the
+protocol-version header. Present headers must be unambiguous, supported and
+match the session; malformed or mismatched values are rejected on every method.
+
 POST normally returns JSON, or a finite SSE response when explicitly preferred.
 GET opens a bounded idle stream (the current tools advertise no unsolicited
 notifications). It periodically checks session and credential validity. SSE

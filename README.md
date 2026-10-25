@@ -140,6 +140,8 @@ Clients should use the OAuth flow above. Manually supplied OIDC access tokens ar
 
 GET accepts `text/event-stream` and opens a finite idle stream; the current tools do not emit unsolicited notifications. POST returns JSON by default, or finite SSE when `text/event-stream` is listed first. Streams have no replay IDs and requests are never automatically retried: a lost SQL response does not prove a write failed. Browser Origins must exactly match the gateway public origin. Reverse proxies must disable SSE buffering and allow streaming responses. Session state is shared in PostgreSQL, with at most 16 live sessions per principal and one 60-second GET stream lease per session.
 
+JSON media types are case-insensitive and may include parameters (for example, `Application/JSON; charset=utf-8`). Clients must send the negotiated protocol-version header; for backwards compatibility, when it is absent the server uses the version stored in the authenticated session. Empty, malformed, duplicate, unsupported or session-mismatched version headers return HTTP 400 on POST, GET and DELETE.
+
 The alternative stdio mode now supports an assisted browser login and automatic refresh through the gateway OAuth broker:
 
 ```sh

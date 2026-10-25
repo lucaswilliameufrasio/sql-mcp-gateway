@@ -37,6 +37,29 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
+fn json_content_type(headers: &HeaderMap) -> bool {
+    header_text(headers, "content-type")
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+}
+
+fn protocol_version(headers: &HeaderMap) -> Result<Option<&str>, StatusCode> {
+    let mut values = headers.get_all(VERSION_HEADER).iter();
+    let Some(value) = values.next() else {
+        // A session identifies the negotiated version even if an older client
+        // omits the header (MCP transport backwards compatibility).
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let version = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !mcp::supported_protocol_version(version) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(version))
+}
+
 fn accepts(headers: &HeaderMap, wanted: &str) -> bool {
     header_text(headers, "accept").is_some_and(|accept| {
         accept.split(',').any(|item| {
@@ -75,9 +98,7 @@ async fn session(
     .await
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
     .ok_or(StatusCode::NOT_FOUND)?;
-    if header_text(headers, VERSION_HEADER)
-        .is_some_and(|version| version != session.protocol_version)
-    {
+    if protocol_version(headers)?.is_some_and(|version| version != session.protocol_version) {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(session)
@@ -154,18 +175,14 @@ pub async fn post_message(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if header_text(&headers, "content-type").and_then(|value| value.split(';').next())
-        != Some("application/json")
-    {
+    if !json_content_type(&headers) {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     }
     if !accepts(&headers, "application/json") || !accepts(&headers, "text/event-stream") {
         return StatusCode::NOT_ACCEPTABLE.into_response();
     }
-    if header_text(&headers, VERSION_HEADER)
-        .is_some_and(|version| !mcp::supported_protocol_version(version))
-    {
-        return StatusCode::BAD_REQUEST.into_response();
+    if let Err(status) = protocol_version(&headers) {
+        return status.into_response();
     }
     let request = match serde_json::from_slice::<Value>(&body) {
         Ok(Value::Object(request)) if valid_message(&request) => request,
@@ -340,6 +357,55 @@ pub async fn listen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_media_type_is_case_insensitive_and_allows_parameters() {
+        let mut headers = HeaderMap::new();
+        for value in [
+            "application/json",
+            "Application/JSON",
+            "APPLICATION/JSON; charset=utf-8",
+            "application/json ; charset=utf-8",
+        ] {
+            headers.insert("content-type", HeaderValue::from_static(value));
+            assert!(
+                json_content_type(&headers),
+                "rejected valid content type: {value}"
+            );
+        }
+        for value in [
+            "text/plain",
+            "application/jsonp",
+            "application/json, text/plain",
+            "",
+        ] {
+            headers.insert("content-type", HeaderValue::from_static(value));
+            assert!(!json_content_type(&headers));
+        }
+        assert!(!json_content_type(&HeaderMap::new()));
+        headers.insert(
+            "content-type",
+            HeaderValue::from_bytes(b"application/\xffjson").unwrap(),
+        );
+        assert!(!json_content_type(&headers));
+    }
+
+    #[test]
+    fn protocol_header_distinguishes_absent_from_invalid_or_ambiguous_values() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(protocol_version(&headers), Ok(None));
+        headers.insert(VERSION_HEADER, HeaderValue::from_static("2025-11-25"));
+        assert_eq!(protocol_version(&headers), Ok(Some("2025-11-25")));
+        for value in ["", "2099-01-01", "2025-11-25, 2025-03-26"] {
+            headers.insert(VERSION_HEADER, HeaderValue::from_static(value));
+            assert_eq!(protocol_version(&headers), Err(StatusCode::BAD_REQUEST));
+        }
+        headers.insert(VERSION_HEADER, HeaderValue::from_bytes(b"\xff").unwrap());
+        assert_eq!(protocol_version(&headers), Err(StatusCode::BAD_REQUEST));
+        headers.insert(VERSION_HEADER, HeaderValue::from_static("2025-11-25"));
+        headers.append(VERSION_HEADER, HeaderValue::from_static("2025-11-25"));
+        assert_eq!(protocol_version(&headers), Err(StatusCode::BAD_REQUEST));
+    }
 
     #[test]
     fn messages_require_jsonrpc_and_valid_request_or_response_shape() {

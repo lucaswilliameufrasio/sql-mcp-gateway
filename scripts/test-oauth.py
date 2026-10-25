@@ -71,7 +71,7 @@ class Browser:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         if value is not None:
             data = json.dumps(value).encode()
-            headers["Content-Type"] = "application/json"
+            headers.setdefault("Content-Type", "application/json")
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             response = self.opener.open(request, timeout=15)
@@ -244,6 +244,12 @@ class Suite:
         self.rpc(tokens, ping, session, status=403, extra={"Origin": "null"})
         self.rpc(tokens, ping, session, status=406, extra={"Accept": "application/json"})
         self.rpc(tokens, ping, session, status=400, extra={"MCP-Protocol-Version": "2099-01-01"})
+        for content_type in ("Application/JSON", "APPLICATION/JSON; charset=utf-8", "application/json ; charset=utf-8"):
+            _, body = self.rpc(tokens, ping, session, extra={"Content-Type": content_type})
+            assert json.loads(body)["result"] == {}, "valid JSON media type was rejected"
+        for content_type in ("text/plain", "application/jsonp"):
+            self.rpc(tokens, ping, session, status=415, extra={"Content-Type": content_type})
+        self.protocol_headers(tokens, session, ping)
         self.rpc(tokens, {"jsonrpc": "2.0", "id": 3}, session, status=400)
         self.rpc(tokens, {"jsonrpc": "2.0", "id": 3, "result": {}}, session, status=202)
         headers, body = self.rpc(tokens, ping, session, extra={"Accept": "text/event-stream, application/json"})
@@ -307,6 +313,27 @@ class Suite:
         assert self.sql("SELECT COUNT(*) FROM mcp_oauth_tokens WHERE revoked_at IS NOT NULL") != "0", "revocation was not persisted"
         self.sql(f"DELETE FROM database_targets WHERE id = '{target}'; DELETE FROM principals; DELETE FROM mcp_oauth_clients;")
         print("Real Keycloak login, consent, PKCE, PostgreSQL grants, MCP sessions/SSE, stdio, rotation/replay and revocation passed.")
+
+    def protocol_headers(self, tokens, session, ping):
+        headers = {"Authorization": "Bearer " + tokens["access_token"],
+                   "MCP-Session-Id": session, "Accept": "application/json, text/event-stream"}
+        # Absent version is recovered from the principal-bound session.
+        _, body = self.http.call(self.resource, "POST", value=ping, headers=headers)
+        assert json.loads(body)["result"] == {}, "missing version did not use negotiated session version"
+        for version in ("", "2099-01-01", "2025-03-26", "2025-11-25, 2025-03-26", "\xff"):
+            invalid = {**headers, "MCP-Protocol-Version": version}
+            self.http.call(self.resource, "POST", value=ping, headers=invalid, status=400)
+            self.http.call(self.resource, headers=invalid, status=400)
+            self.http.call(self.resource, "DELETE", headers=invalid, status=400)
+        # Rejected DELETEs must not terminate the session. GET and DELETE also
+        # accept a missing version when the session supplies it.
+        temporary = self.initialize(tokens)
+        temporary_headers = {**headers, "MCP-Session-Id": temporary}
+        request = urllib.request.Request(self.resource, headers=temporary_headers)
+        with urllib.request.urlopen(request, timeout=10) as stream:
+            assert stream.readline().startswith(b":"), "GET without a version did not open SSE"
+        self.http.call(self.resource, "DELETE", headers=temporary_headers, status=204)
+        self.rpc(tokens, ping, temporary, status=404)
 
     def stdio(self, tokens):
         # This subprocess has NO database, OIDC, Vault, or state-key settings.

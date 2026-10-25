@@ -45,6 +45,8 @@ The stdio process is an HTTP bridge to the remote gateway; it does not open the 
 
 POST accepts both JSON and SSE media types, normally returns JSON, and can return a finite SSE response when SSE is listed first. GET streams are finite, use comments as idle heartbeats, and acquire one 60-second stream lease per session across replicas. There are no unsolicited tool notifications (`listChanged: false`), replay IDs or persisted request results. GET reconnects do not replay SQL operations; a lost response has an uncertain outcome. All methods validate browser Origin against the configured public origin, and all requests authenticate independently of session IDs. Session metadata works across replicas; SSE connections themselves are local and bounded. Disable reverse-proxy buffering. See [ADR 0002](adr/0002-remote-stdio-and-streamable-http.md).
 
+Content-Type matching ignores media-type case and whitespace around parameters. A missing protocol-version header uses the session's negotiated version for backwards compatibility; a present header must be a single, valid, supported version matching that session. POST, GET and DELETE reject malformed or conflicting version headers with 400. This follows the MCP transport's version-identification fallback rather than treating an absent header as malformed.
+
 ## Capability boundaries
 
 - **Administration:** database target lifecycle, signed-in principal discovery, per-user grants, and audit review. OIDC and Vault endpoints/credentials are operator-managed runtime configuration.
