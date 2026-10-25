@@ -37,16 +37,22 @@ The deployment belongs inside the private network or VPN that can reach the targ
 
 ### Use the stdio transport
 
-The local stdio process uses the same authorization and database-credential implementation. Run `sql-mcp-gateway --login <gateway-url>` to complete the gateway OAuth authorization-code/PKCE flow in a browser; the access and rotating refresh tokens are stored in the operating system credential store, not MCP configuration. Stdio refreshes tokens before expiry and serializes concurrent refreshes. `sql-mcp-gateway --logout <gateway-url>` revokes the refresh-token family when possible and removes local credentials. If the OS credential store is unavailable, login fails closed; there is no plaintext-file fallback. The deprecated `SQL_MCP_ACCESS_TOKEN` environment variable remains supported for migration only and receives no automatic refresh.
+The stdio process is an HTTP bridge to the remote gateway; it does not open the control database or Vault and needs no operator settings. Run `sql-mcp-gateway --login <gateway-url>` to complete the gateway OAuth authorization-code/PKCE flow in a browser, then `sql-mcp-gateway --stdio <gateway-url>`. Omitting the URL uses `MCP_PUBLIC_URL`. Access and rotating refresh tokens are stored in the operating system credential store, not MCP configuration. Stdio refreshes before expiry and serializes refreshes within the process; an uncertain refresh failure requires reauthentication, not reuse. `--logout <gateway-url>` revokes the token family when possible and removes local credentials. If the OS credential store is unavailable, login fails closed with no plaintext-file fallback. Deprecated `SQL_MCP_ACCESS_TOKEN` remains supported for migration only, without automatic refresh. The bridge preserves JSON-RPC IDs and notifications, reads finite JSON/SSE responses, releases the session on EOF, and never replays a failed SQL request.
+
+### Streamable HTTP session lifecycle
+
+`/mcp` accepts authenticated POST, GET SSE and DELETE. Initialization creates a random UUID session bound to the authenticated principal in PostgreSQL; readiness requires `notifications/initialized`. Subsequent calls carry the session ID and negotiated protocol version. Sessions expire after 30 minutes; a missing session is 400, unknown/expired/foreign sessions are 404. Initialization admits at most 16 live sessions per principal using a PostgreSQL transaction/advisory lock. Expired rows are cleaned up at admission. DELETE ends the session; existing GET streams notice deletion/revocation within their five-second check interval.
+
+POST accepts both JSON and SSE media types, normally returns JSON, and can return a finite SSE response when SSE is listed first. GET streams are finite, use comments as idle heartbeats, and acquire one 60-second stream lease per session across replicas. There are no unsolicited tool notifications (`listChanged: false`), replay IDs or persisted request results. GET reconnects do not replay SQL operations; a lost response has an uncertain outcome. All methods validate browser Origin against the configured public origin, and all requests authenticate independently of session IDs. Session metadata works across replicas; SSE connections themselves are local and bounded. Disable reverse-proxy buffering. See [ADR 0002](adr/0002-remote-stdio-and-streamable-http.md).
 
 ## Capability boundaries
 
 - **Administration:** database target lifecycle, signed-in principal discovery, per-user grants, and audit review. OIDC and Vault endpoints/credentials are operator-managed runtime configuration.
-- **Identity:** OIDC discovery and token validation; issuer plus subject is the stable principal key. The initial implementation uses standard identity claims rather than configurable claim mapping.
+- **Identity:** OIDC discovery and signed-token/userinfo validation; issuer plus subject is the stable principal key. Audience is validated locally and configured at the IdP, not sent upstream as a `resource` indicator. MCP's gateway resource binding remains distinct. The implementation uses standard identity claims rather than configurable claim mapping.
 - **Authorization:** deny by default; grants are scoped to a user and a target, with `read` and `write` levels. Every MCP operation is authorized server-side, including listing and schema discovery.
 - **Credential brokering:** converts an authorized principal/target/access mode into a Vault lease. Target and role references come from server-owned records, never untrusted MCP arguments.
 - **Database adapters:** PostgreSQL and MySQL connection, schema discovery, query execution, timeout/cancellation, and safe result shaping.
-- **MCP transports:** authenticated HTTP POST with JSON request/response and stdio; both call the same application services and authorization policy. Streamable HTTP SSE/GET sessions are not implemented.
+- **MCP transports:** Streamable HTTP with PostgreSQL sessions, POST JSON/SSE, GET idle SSE and DELETE; stdio bridges to the same authenticated endpoint rather than duplicating query execution.
 - **Audit:** append-only security events with actor, target, access mode, Vault lease/database principal, operation class, duration, and outcome. Do not log credentials or result values by default.
 
 ## Authorization invariants
@@ -82,7 +88,7 @@ The local stdio process uses the same authorization and database-credential impl
 3. **OIDC and authorization:** validate tokens from a configurable issuer, map issuer/subject and optional groups, and cover allowed/denied cases with integration tests.
 4. **Remote read-only MCP journey:** expose authorized target listing, schema inspection, and bounded read queries over authenticated HTTP POST with JSON request/response.
 5. **Write journey:** add separate Vault/database write roles and explicitly scoped DML operations, with authorization and audit regression tests.
-6. **stdio bridge:** relay to the same gateway authorization policy. The current implementation accepts an access token injected by its MCP host; browser/device login and credential-store integration remain future work.
+6. **stdio bridge:** relay to the remote gateway authorization policy with browser OAuth/PKCE login, keyring credential storage and automatic refresh; no client-side operator secrets.
 7. **Hardening:** test revocation, session expiry, Vault/database outages, query cancellation, audit completeness, TLS failures, and concurrent sessions.
 
 ## Decisions deferred behind a working vertical slice
@@ -91,7 +97,7 @@ The local stdio process uses the same authorization and database-credential impl
 - Additional group-based grants and custom role composition.
 - Vault auto-auth methods beyond the first self-hosted deployment configuration.
 
-The credential broker, control plane, OIDC authorization, SQL adapters, admin UI, and HTTP/stdio MCP paths have an initial implementation. The opt-in `make test-integration` suite starts isolated local Vault, PostgreSQL, and MySQL services and validates the real dynamic-credential, DML privilege, uniqueness, and revocation behavior. This proves the local integration contract, not production-specific TLS, network, identity-provider, or operational hardening; those require deployment-specific evidence using the [release checklist](production-readiness.md).
+The opt-in `make test-integration` suite runs twice against isolated Vault, PostgreSQL, MySQL and Keycloak services. It validates dynamic credentials/DML permissions, real browser OIDC login and signed JWT/userinfo validation, persisted OAuth codes and rotation/replay/revocation, current grants, Streamable HTTP session isolation/lifecycle/SSE and the actual remote stdio subprocess without operator configuration. This proves the isolated integration contract, not production-specific TLS, network, IdP policy or operational hardening; those require deployment-specific evidence using the [release checklist](production-readiness.md).
 
 ## External contracts checked
 

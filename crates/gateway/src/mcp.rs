@@ -1,9 +1,3 @@
-use axum::{
-    body::Bytes,
-    extract::State,
-    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
-    response::{IntoResponse, Response},
-};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -14,106 +8,7 @@ use crate::{
     state::AppState,
 };
 
-pub async fn http_mcp(
-    State(state): State<AppState>,
-    axum::Extension(actor): axum::Extension<AuthenticatedPrincipal>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if !headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(';').next().is_some_and(|media_type| {
-                media_type.trim().eq_ignore_ascii_case("application/json")
-            })
-        })
-    {
-        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
-    }
-    if !headers
-        .get("accept")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(',').any(|media_type| {
-                media_type.split(';').next().is_some_and(|media_type| {
-                    media_type.trim().eq_ignore_ascii_case("application/json")
-                })
-            })
-        })
-    {
-        return StatusCode::NOT_ACCEPTABLE.into_response();
-    }
-    if let Some(version) = headers
-        .get("MCP-Protocol-Version")
-        .and_then(|value| value.to_str().ok())
-        && !supported_protocol_version(version)
-    {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-
-    let request = match serde_json::from_slice::<Value>(&body) {
-        Ok(Value::Object(request)) => request,
-        _ => {
-            return json_rpc_error(
-                Value::Null,
-                -32600,
-                "Invalid Request",
-                StatusCode::BAD_REQUEST,
-            );
-        }
-    };
-    let is_notification = !request.contains_key("id");
-    if is_notification {
-        return StatusCode::ACCEPTED.into_response();
-    }
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let response = dispatch_request(&state, &actor, request).await;
-
-    match response {
-        Ok(result) => (
-            StatusCode::OK,
-            [(CONTENT_TYPE, "application/json")],
-            axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result})),
-        )
-            .into_response(),
-        Err((code, message)) => json_rpc_error(id, code, message, StatusCode::OK),
-    }
-}
-
-pub async fn dispatch_stdio_line(
-    state: &AppState,
-    actor: &AuthenticatedPrincipal,
-    line: &str,
-) -> Option<Value> {
-    let request = match serde_json::from_str::<Value>(line) {
-        Ok(Value::Object(request)) => request,
-        _ => {
-            return Some(json!({
-                "jsonrpc": "2.0",
-                "id": null,
-                "error": {"code": -32600, "message": "Invalid Request"}
-            }));
-        }
-    };
-    let is_notification = !request.contains_key("id");
-    if is_notification {
-        return None;
-    }
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let response = dispatch_request(state, actor, request).await;
-
-    Some(match response {
-        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-        Err((code, message)) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": code, "message": message}
-        }),
-    })
-}
-
-async fn dispatch_request(
+pub(crate) async fn dispatch_request(
     state: &AppState,
     actor: &AuthenticatedPrincipal,
     request: Map<String, Value>,
@@ -159,7 +54,7 @@ async fn dispatch_request(
     }
 }
 
-fn initialize_result(params: &Value) -> Value {
+pub(crate) fn initialize_result(params: &Value) -> Value {
     let requested_version = params
         .get("protocolVersion")
         .and_then(Value::as_str)
@@ -178,7 +73,7 @@ fn initialize_result(params: &Value) -> Value {
     })
 }
 
-fn supported_protocol_version(version: &str) -> bool {
+pub(crate) fn supported_protocol_version(version: &str) -> bool {
     matches!(
         version,
         "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" | "2026-07-28"
@@ -391,19 +286,6 @@ fn query_error_message(error: crate::sql_access::QueryError) -> &'static str {
             "O broker de credenciais está indisponível."
         }
     }
-}
-
-fn json_rpc_error(id: Value, code: i64, message: &str, status: StatusCode) -> Response {
-    (
-        status,
-        [("content-type", "application/json")],
-        axum::Json(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": code, "message": message}
-        })),
-    )
-        .into_response()
 }
 
 #[cfg(test)]

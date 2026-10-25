@@ -2,7 +2,7 @@
 
 Self-hosted gateway for giving authenticated people controlled access to PostgreSQL and MySQL through MCP. Deploy it inside a private network or VPN. The gateway validates OIDC access tokens, applies per-person/per-database grants, and asks Vault for short-lived database identities.
 
-The HTTP endpoint currently handles authenticated JSON-RPC requests with `POST /mcp`; it does not implement Streamable HTTP SSE or GET sessions. The administration UI and gateway are separate processes. See [architecture and protocol boundaries](docs/architecture.md) before choosing an MCP client or deployment shape.
+The gateway supports Streamable HTTP at `/mcp` (POST JSON/SSE, GET SSE and DELETE sessions), plus a remote stdio bridge. The administration UI and gateway are separate processes. See [architecture and protocol boundaries](docs/architecture.md) for lifecycle and deployment requirements.
 
 ## Choose a path
 
@@ -136,13 +136,15 @@ ${MCP_PUBLIC_URL}/mcp
 
 For the local stack, `MCP_PUBLIC_URL` defaults to `http://127.0.0.1:8080`; deployments must use their externally reachable HTTPS origin.
 
-Clients should use the OAuth flow above. Manually supplied OIDC access tokens are retained only as a compatibility path; they must have the configured audience and must not be saved in shared config. The endpoint currently handles authenticated JSON-RPC `POST` requests with JSON content negotiation; full Streamable HTTP sessions/SSE are not implemented.
+Clients should use the OAuth flow above. Manually supplied OIDC access tokens are retained only as a compatibility path; they must have the configured audience and must not be saved in shared config. POST requests must accept both `application/json` and `text/event-stream`. Initialize first, retain the returned `MCP-Session-Id`, send `notifications/initialized`, then include the session ID and negotiated `MCP-Protocol-Version` on subsequent requests. Sessions expire after 30 minutes; HTTP 404 requires fresh initialization. DELETE closes a session. Every request still authenticates and every tool call rechecks grants.
+
+GET accepts `text/event-stream` and opens a finite idle stream; the current tools do not emit unsolicited notifications. POST returns JSON by default, or finite SSE when `text/event-stream` is listed first. Streams have no replay IDs and requests are never automatically retried: a lost SQL response does not prove a write failed. Browser Origins must exactly match the gateway public origin. Reverse proxies must disable SSE buffering and allow streaming responses. Session state is shared in PostgreSQL, with at most 16 live sessions per principal and one 60-second GET stream lease per session.
 
 The alternative stdio mode now supports an assisted browser login and automatic refresh through the gateway OAuth broker:
 
 ```sh
 cargo run -p sql-mcp-gateway -- --login "${MCP_PUBLIC_URL}"
-cargo run -p sql-mcp-gateway -- --stdio
+cargo run -p sql-mcp-gateway -- --stdio "${MCP_PUBLIC_URL}"
 ```
 
 Login stores the access and rotating refresh tokens in the operating system credential store, scoped to that gateway URL. Logout revokes the refresh-token family when the gateway is reachable and removes the local entry:
@@ -151,7 +153,9 @@ Login stores the access and rotating refresh tokens in the operating system cred
 cargo run -p sql-mcp-gateway -- --logout "${MCP_PUBLIC_URL}"
 ```
 
-The stdio process still needs the gateway's operational runtime configuration (control database and Vault access) to execute queries. The credential store must be available and unlocked; the process fails closed rather than writing tokens to a plaintext file. `SQL_MCP_ACCESS_TOKEN` remains temporarily supported for existing installations, but is deprecated and does not refresh automatically.
+The stdio process is now a **remote client**: it needs only the gateway URL and the logged-in user's keyring, not control-database, OIDC, Vault, or state-key configuration. `--stdio` without a URL reads `MCP_PUBLIC_URL` (including from local `.env`); it no longer starts a local query executor. Configure the MCP host command as `sql-mcp-gateway` with arguments `["--stdio", "https://gateway.example.test"]`. The gateway handles grants, leases and audit centrally. At EOF the bridge attempts DELETE to release its session. An expired session is reported to the host for reinitialization; tool calls are not replayed.
+
+The credential store must be available and unlocked; the process fails closed rather than writing tokens to a plaintext file. `SQL_MCP_ACCESS_TOKEN` remains temporarily supported for existing installations, but is deprecated and does not refresh automatically. Login/refresh remain keyring-backed; operator secrets must not be copied to MCP host configuration.
 
 ## Deploy
 
@@ -192,6 +196,8 @@ cargo test --workspace
 cd apps/admin && pnpm check && pnpm test && pnpm lint && pnpm build
 ```
 
-`make test-integration` is separate and starts an isolated Docker Compose stack for Vault, PostgreSQL, and MySQL. It is not required to run the app locally; read the script and its cleanup behavior before opting in.
+`make test-integration` is separate and starts an isolated Docker Compose stack for Vault, PostgreSQL, MySQL and Keycloak. It requires Python 3 (stdlib only) in addition to Docker, OpenSSL and Cargo. It is not required to run the app locally; read the script and its cleanup behavior before opting in.
 
 To opt in, run `make test-integration` from the repository root. The script generates test-only credentials and local TLS files under `/tmp/opencode`, binds service ports to loopback, uses fixed image versions from `compose.integration.yaml`, and removes its uniquely named containers, test volumes, and temporary credentials when it finishes. It does not use `.env` or connect to external databases.
+
+Each run performs two passes. Besides real dynamic database leases, it runs the actual gateway binary against Keycloak discovery/JWKS, browser authorization-code/PKCE, signed-token/userinfo validation, consent, code reuse, token rotation/replay/revocation (including concurrent refresh), PostgreSQL grants, Origin checks, session isolation/expiry/admission/termination, POST/GET SSE, and a real stdio subprocess with no operator configuration. The temporary Keycloak realm's wildcard callback and loopback cookie policy are test-only and must not be copied to a deployment.

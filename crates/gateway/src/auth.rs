@@ -23,6 +23,9 @@ pub async fn require_identity(
     next: Next,
 ) -> Result<Response, ApiError> {
     let is_mcp_request = request.uri().path() == "/mcp";
+    if is_mcp_request && !crate::mcp_transport::valid_origin(request.headers(), &state) {
+        return Ok(StatusCode::FORBIDDEN.into_response());
+    }
     let authorization = request
         .headers()
         .get(AUTHORIZATION)

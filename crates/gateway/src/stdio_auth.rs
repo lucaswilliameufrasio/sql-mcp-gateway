@@ -46,6 +46,10 @@ pub enum StdioAuthError {
     Login,
     #[error("OAuth credentials expired or could not be renewed; sign in again")]
     ReauthenticationRequired,
+    #[error("the remote MCP request failed; it was not retried")]
+    RemoteTransport,
+    #[error("the MCP session expired; initialize a new session before sending more requests")]
+    SessionExpired,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -506,7 +510,7 @@ async fn receive_callback(
     )
 }
 
-fn normalize_server_url(value: &str) -> Result<Url, StdioAuthError> {
+pub(crate) fn normalize_server_url(value: &str) -> Result<Url, StdioAuthError> {
     let mut url = Url::parse(value).map_err(|_| StdioAuthError::InvalidServer)?;
     if !is_secure_url(&url)
         || url.query().is_some()

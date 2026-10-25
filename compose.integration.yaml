@@ -1,4 +1,15 @@
 services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HOSTNAME_STRICT: "false"
+      JAVA_OPTS_KC_HEAP: "-Xms128m -Xmx384m"
+    ports:
+      - "127.0.0.1::8080"
+    volumes:
+      - ${INTEGRATION_OIDC_DIR:?integration script must generate a test realm}:/opt/keycloak/data/import:ro
+
   vault:
     image: hashicorp/vault:1.21.4
     command: ["server", "-dev", "-dev-listen-address=0.0.0.0:8200"]

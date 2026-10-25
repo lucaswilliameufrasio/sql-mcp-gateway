@@ -281,7 +281,6 @@ async fn authorize(
         &callback_uri,
         &upstream_state,
         &upstream_challenge,
-        &state.oidc_access_token_audience,
     );
     let cookie = format!(
         "mcp_oauth_state={upstream_state}; Path=/oauth; HttpOnly; SameSite=Lax; Max-Age={AUTHORIZATION_REQUEST_TTL_SECONDS}{}",
@@ -345,7 +344,6 @@ async fn callback(
             &endpoint(&state.mcp_public_url, "oauth/callback"),
             &query_values.code,
             &verifier,
-            &state.oidc_access_token_audience,
         )
         .await
         .map_err(|_| OAuthError::UpstreamAuthenticationFailed)?;

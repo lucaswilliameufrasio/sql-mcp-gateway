@@ -168,10 +168,10 @@
       <code>sql-mcp-gateway --login {config.mcp_endpoint}</code> uma vez. O navegador conclui OAuth
       e os tokens rotativos são guardados no keyring do sistema; depois configure o cliente para
       executar
-      <code>sql-mcp-gateway --stdio</code>. O modo stdio também precisa das configurações
-      operacionais locais do gateway. Se não houver keyring disponível, o login falha sem gravar
-      credenciais em arquivo. <code>SQL_MCP_ACCESS_TOKEN</code> continua aceito apenas como compatibilidade
-      legada.
+      <code>sql-mcp-gateway --stdio {config.mcp_endpoint}</code>. O subprocesso conecta ao gateway
+      remoto; não precisa de banco de controle, OIDC ou Vault locais. Se não houver keyring
+      disponível, o login falha sem gravar credenciais em arquivo. <code>SQL_MCP_ACCESS_TOKEN</code> continua
+      aceito apenas como compatibilidade legada.
     </p>
   </section>
   <p class="connect-footnote">

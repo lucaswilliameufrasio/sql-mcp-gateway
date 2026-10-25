@@ -6,6 +6,7 @@ mod domain;
 mod handlers;
 mod identity;
 mod mcp;
+mod mcp_transport;
 mod oauth;
 mod sql_access;
 mod state;
@@ -49,7 +50,7 @@ enum StartupError {
 
 enum Command {
     Http,
-    Stdio,
+    Stdio(String),
     Login(String),
     Logout(String),
 }
@@ -61,7 +62,10 @@ async fn main() -> Result<(), StartupError> {
 
     let command = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
         [] => Command::Http,
-        [argument] if argument == "--stdio" => Command::Stdio,
+        [argument] if argument == "--stdio" => Command::Stdio(
+            std::env::var("MCP_PUBLIC_URL").map_err(|_| StartupError::InvalidArgument)?,
+        ),
+        [argument, server] if argument == "--stdio" => Command::Stdio(server.clone()),
         [argument, server] if argument == "--login" => Command::Login(server.clone()),
         [argument, server] if argument == "--logout" => Command::Logout(server.clone()),
         _ => return Err(StartupError::InvalidArgument),
@@ -74,19 +78,14 @@ async fn main() -> Result<(), StartupError> {
         Command::Logout(server) => {
             return stdio_auth::logout(server).await.map_err(StartupError::from);
         }
-        Command::Http | Command::Stdio => {}
+        Command::Stdio(server) => {
+            return stdio::run(server).await.map_err(StartupError::from);
+        }
+        Command::Http => {}
     }
 
     let settings = Settings::from_environment()?;
     let state = create_state(settings).await?;
-    if matches!(command, Command::Stdio) {
-        let token_provider = stdio_auth::TokenProvider::load(state.mcp_public_url.as_str())
-            .await
-            .map_err(StartupError::from)?;
-        stdio::run(state, token_provider).await;
-        return Ok(());
-    }
-
     serve_http(state).await
 }
 
@@ -131,6 +130,17 @@ async fn create_state(settings: Settings) -> Result<AppState, StartupError> {
 }
 
 async fn serve_http(state: AppState) -> Result<(), StartupError> {
+    let app = app_router(state.clone());
+    let listener = TcpListener::bind(state.bind_address)
+        .await
+        .map_err(|_| StartupError::ListenerBind)?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|_| StartupError::Server)
+}
+
+fn app_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/v1/me", get(handlers::me))
         .route("/v1/databases", get(handlers::list_databases))
@@ -152,29 +162,25 @@ async fn serve_http(state: AppState) -> Result<(), StartupError> {
             axum::routing::put(handlers::set_target_enabled),
         )
         .route("/v1/admin/audit-events", get(handlers::list_audit_events))
-        .route("/mcp", post(mcp::http_mcp))
+        .route(
+            "/mcp",
+            post(mcp_transport::post_message)
+                .get(mcp_transport::listen)
+                .delete(mcp_transport::terminate),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_identity,
         ));
 
-    let app = Router::new()
+    Router::new()
         .route("/health", get(health))
         .route("/readyz", get(readiness))
         .route("/v1/auth/config", get(handlers::auth_config))
         .merge(protected_routes)
         .merge(oauth::routes())
-        .with_state(state.clone());
-    let listener = TcpListener::bind(state.bind_address)
-        .await
-        .map_err(|_| StartupError::ListenerBind)?;
-
-    tracing::info!("SQL MCP Gateway HTTP listener started");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|_| StartupError::Server)
+        .with_state(state)
 }
 
 fn initialize_tracing() {

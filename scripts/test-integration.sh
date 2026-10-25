@@ -24,6 +24,9 @@ compose() {
 cleanup() {
     exit_status=$?
     if [ "$stack_started" -eq 1 ]; then
+        if [ "$exit_status" -ne 0 ]; then
+            compose logs --tail 40 keycloak 2>/dev/null | grep -E 'ERROR|WARN|Failed|Listening|started' || true
+        fi
         compose down --volumes --remove-orphans >/dev/null 2>&1 || true
     fi
     rm -rf -- "$temporary_directory"
@@ -43,6 +46,11 @@ command -v openssl >/dev/null 2>&1 || {
     echo "OpenSSL is required to create temporary integration TLS certificates" >&2
     exit 1
 }
+command -v python3 >/dev/null 2>&1 || {
+    echo "Python 3 is required for the real OIDC integration suite" >&2
+    exit 1
+}
+python3 "$repo_root/scripts/test-oauth.py" --prepare "$temporary_directory"
 
 openssl rand -hex 32 > "$temporary_directory/vault-token"
 openssl rand -hex 32 > "$temporary_directory/postgres-password"
@@ -88,6 +96,7 @@ VAULT_DEV_ROOT_TOKEN_ID=$vault_token
 POSTGRES_PASSWORD=$postgres_password
 MYSQL_ROOT_PASSWORD=$mysql_password
 INTEGRATION_TLS_DIR=$tls_directory
+INTEGRATION_OIDC_DIR=$temporary_directory/oidc
 EOF
 chmod 600 "$compose_environment"
 
@@ -100,6 +109,9 @@ mysql_port=$(compose port mysql 3306)
 vault_port=${vault_port##*:}
 postgres_port=${postgres_port##*:}
 mysql_port=${mysql_port##*:}
+keycloak_port=$(compose port keycloak 8080)
+keycloak_port=${keycloak_port##*:}
+postgres_container=$(compose ps -q postgres)
 
 cat > "$test_environment" <<EOF
 SQL_MCP_GATEWAY_TEST_VAULT_ADDRESS=http://127.0.0.1:$vault_port/
@@ -109,10 +121,14 @@ SQL_MCP_GATEWAY_TEST_POSTGRES_PORT=$postgres_port
 SQL_MCP_GATEWAY_TEST_MYSQL_PASSWORD=$mysql_password
 SQL_MCP_GATEWAY_TEST_MYSQL_PORT=$mysql_port
 SQL_MCP_GATEWAY_TEST_TLS_CA=$tls_directory/ca.crt
+SQL_MCP_GATEWAY_TEST_OIDC_ISSUER=http://127.0.0.1:$keycloak_port/realms/mcp-it
+SQL_MCP_GATEWAY_TEST_POSTGRES_CONTAINER=$postgres_container
 EOF
 chmod 600 "$test_environment"
 
 iteration=1
+cargo build --manifest-path "$repo_root/Cargo.toml" -p sql-mcp-gateway
+target_directory=$(cargo metadata --manifest-path "$repo_root/Cargo.toml" --no-deps --format-version=1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 while [ "$iteration" -le 2 ]; do
     echo "Running live Vault/PostgreSQL/MySQL integration pass $iteration of 2"
     SQL_MCP_GATEWAY_TEST_ENV="$test_environment" \
@@ -123,9 +139,10 @@ while [ "$iteration" -le 2 ]; do
             --bin sql-mcp-gateway \
             handlers::tests::live_vault_postgres_mysql_dynamic_leases_enforce_database_permissions \
             -- --ignored --exact --nocapture
+    python3 "$repo_root/scripts/test-oauth.py" "$temporary_directory" "$target_directory/debug/sql-mcp-gateway"
     iteration=$((iteration + 1))
 done
 
 compose down --volumes --remove-orphans
 stack_started=0
-echo "Live integration suite passed twice; local services and generated credentials were removed."
+echo "Live database, Keycloak OAuth, Streamable HTTP and remote stdio suites passed twice; isolated resources were removed."

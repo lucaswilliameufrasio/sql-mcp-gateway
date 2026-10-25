@@ -222,7 +222,6 @@ impl OidcClient {
         redirect_uri: &str,
         state: &str,
         code_challenge: &str,
-        resource: &str,
     ) -> Url {
         let mut url = self.authorization_endpoint.clone();
         url.query_pairs_mut()
@@ -232,8 +231,7 @@ impl OidcClient {
             .append_pair("scope", "openid profile email")
             .append_pair("state", state)
             .append_pair("code_challenge", code_challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("resource", resource);
+            .append_pair("code_challenge_method", "S256");
         url
     }
 
@@ -243,7 +241,6 @@ impl OidcClient {
         redirect_uri: &str,
         code: &str,
         code_verifier: &str,
-        resource: &str,
     ) -> Result<TokenResponse, OidcError> {
         let form = url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs([
@@ -252,7 +249,6 @@ impl OidcClient {
                 ("redirect_uri", redirect_uri),
                 ("code", code),
                 ("code_verifier", code_verifier),
-                ("resource", resource),
             ])
             .finish();
         let response = self
@@ -404,7 +400,6 @@ mod tests {
                 "http://127.0.0.1:45678/oauth/callback",
                 "single-use-code",
                 "pkce-verifier-material",
-                "https://mcp.example.test/mcp",
             )
             .await
             .expect("fake provider returns its synthetic access token");
@@ -428,10 +423,7 @@ mod tests {
             form.get("code").map(String::as_str),
             Some("single-use-code")
         );
-        assert_eq!(
-            form.get("resource").map(String::as_str),
-            Some("https://mcp.example.test/mcp")
-        );
+        assert!(!form.contains_key("resource"));
 
         server.abort();
     }

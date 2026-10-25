@@ -2,7 +2,7 @@
 
 This procedure builds the gateway as a Lambda container image, configures a private REST API, reviews the OpenTofu plan, and verifies the private route. The example creates the Lambda function/role/policies, a private API Gateway REST API, stage, access-log group, and invoke permission. It does **not** create the ECR repository, VPC/subnets/security groups, RDS/RDS Proxy, `execute-api` or Secrets Manager endpoints, Vault, target databases, OIDC provider, or admin UI. Deploy the UI separately using the [shared admin UI instructions](README.md#deploy-the-admin-ui).
 
-> **Compatibility is not yet proven.** The gateway currently accepts JSON-RPC with authenticated `POST /mcp` and `application/json`; it does not implement Streamable HTTP SSE or GET sessions. This repository has not tested this Lambda Web Adapter + API Gateway combination. Validate protocol headers, payload limits, timeout behavior, OIDC, cold starts, and concurrency in an isolated AWS account before production.
+> **Deployment compatibility is not yet proven.** The gateway implements Streamable HTTP POST JSON/SSE, GET SSE and DELETE with PostgreSQL-backed sessions. This repository has not tested this Lambda Web Adapter + API Gateway combination. Validate streaming support/buffering, session and protocol headers, payload limits, timeout behavior, OIDC, cold starts, and concurrency in an isolated AWS account before production. Do not claim that a JSON POST success proves SSE compatibility; use a streaming-capable ingress or configure clients for JSON responses when the chosen API Gateway integration buffers streams.
 
 ## Before you start
 
