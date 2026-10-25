@@ -3,6 +3,7 @@ name = "sql-mcp-gateway"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 axum = { version = "0.8", features = ["json", "macros", "tokio"] }

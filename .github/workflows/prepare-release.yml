@@ -1,0 +1,144 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (for example 0.3.0 or v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: git-cliff@2.14.2
+
+      - name: Validate version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          version="${REQUESTED_VERSION#v}"
+          VERSION="$version" python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
+              sys.exit("error: version must be stable SemVer X.Y.Z")
+
+          requested = tuple(int(part) for part in version.split("."))
+          current = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
+          current_parts = tuple(int(part) for part in current.split("."))
+          tags = subprocess.check_output(["git", "tag", "--list", "v*"], text=True).splitlines()
+
+          if f"v{version}" in tags:
+              sys.exit(f"error: tag v{version} already exists")
+          if requested < current_parts:
+              sys.exit(f"error: v{version} is older than the current package version {current}")
+          if requested == current_parts:
+              heading = re.compile(rf"^## \[{re.escape(version)}\]", re.MULTILINE)
+              if tags or heading.search(Path("CHANGELOG.md").read_text()):
+                  sys.exit(f"error: v{version} has already been prepared or released")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+          PY
+
+      - name: Generate changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git cliff --tag "v$VERSION" --output CHANGELOG.md
+
+      - name: Update package versions and lockfile
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          VERSION="$VERSION" python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          cargo = Path("Cargo.toml")
+          text = cargo.read_text()
+          section = re.search(r"(?ms)^\[workspace\.package\]\s*\n(.*?)(?=^\[|\Z)", text)
+          if section is None:
+              raise SystemExit("error: Cargo.toml has no [workspace.package] section")
+          updated, count = re.subn(
+              r'(?m)^version\s*=\s*"[^"]+"\s*$',
+              f'version = "{version}"',
+              section.group(1),
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("error: could not update [workspace.package].version")
+          cargo.write_text(text[:section.start(1)] + updated + text[section.end(1):])
+
+          package_json = Path("apps/admin/package.json")
+          package = json.loads(package_json.read_text())
+          package["version"] = version
+          package_json.write_text(json.dumps(package, indent=2) + "\n")
+          PY
+
+          cargo check --workspace
+
+      - name: Create release preparation PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: release/v${{ steps.version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md Cargo.toml Cargo.lock apps/admin/package.json
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "error: release preparation produced no changes" >&2
+            exit 1
+          fi
+          git commit -m "chore(release): prepare for v$VERSION"
+          git push origin "HEAD:$BRANCH"
+
+          cat > "$RUNNER_TEMP/pr-body.md" <<EOF
+          Automated release preparation for **v$VERSION**.
+
+          Review the generated changelog and version/lockfile changes before merging.
+
+          After merging, create and push tag v$VERSION to trigger the Release workflow.
+          EOF
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Release v$VERSION" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
