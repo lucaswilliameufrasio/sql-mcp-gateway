@@ -66,6 +66,24 @@ prepare_environment() {
         else
             printf 'OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback\n' >> "$env_file"
         fi
+        if ! grep -q '^OIDC_MCP_REDIRECT_URI=' "$env_file"; then
+            printf 'OIDC_MCP_REDIRECT_URI=http://127.0.0.1:8080/oauth/callback\n' >> "$env_file"
+        fi
+        if ! grep -q '^MCP_PUBLIC_URL=' "$env_file"; then
+            printf 'MCP_PUBLIC_URL=http://127.0.0.1:8080\n' >> "$env_file"
+        fi
+        if ! grep -q '^MCP_OAUTH_STATE_KEY=' "$env_file"; then
+            command -v openssl >/dev/null 2>&1 || {
+                echo "OpenSSL is required to generate the local MCP OAuth state key." >&2
+                exit 1
+            }
+            mcp_oauth_state_key=$(openssl rand -hex 32)
+            printf 'MCP_OAUTH_STATE_KEY=%s\n' "$mcp_oauth_state_key" >> "$env_file"
+            unset mcp_oauth_state_key
+        elif ! grep -q '^MCP_OAUTH_STATE_KEY=.' "$env_file"; then
+            echo ".env.dev contains an empty MCP_OAUTH_STATE_KEY; refusing to start the stack." >&2
+            exit 1
+        fi
         chmod 600 "$env_file"
         return
     fi
@@ -83,6 +101,7 @@ prepare_environment() {
     authentik_bootstrap_password=$(openssl rand -hex 24)
     dev_admin_password=$(openssl rand -hex 24)
     vault_root_token=$(openssl rand -hex 32)
+    mcp_oauth_state_key=$(openssl rand -hex 32)
 
     cat > "$env_file" <<EOF
 CONTROL_DB_PASSWORD=$control_db_password
@@ -96,12 +115,16 @@ VAULT_DEV_ROOT_TOKEN_ID=$vault_root_token
 OIDC_ISSUER_URL=http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/
 OIDC_CLIENT_ID=sql-mcp-gateway-dev
 OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback
+OIDC_MCP_REDIRECT_URI=http://127.0.0.1:8080/oauth/callback
 OIDC_ACCESS_TOKEN_AUDIENCE=sql-mcp-gateway-dev
 OIDC_BOOTSTRAP_ADMIN_SUBJECTS=dev-admin
+MCP_PUBLIC_URL=http://127.0.0.1:8080
+MCP_OAUTH_STATE_KEY=$mcp_oauth_state_key
 EOF
     chmod 600 "$env_file"
     unset control_db_password authentik_db_password target_postgres_password target_mysql_password
     unset authentik_secret_key authentik_bootstrap_password dev_admin_password vault_root_token
+    unset mcp_oauth_state_key
     echo "Created owner-only .env.dev with fresh local-only credentials; existing files are never overwritten."
 }
 

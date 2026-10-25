@@ -64,6 +64,7 @@ resource "aws_iam_role_policy" "read_secrets" {
       Action = ["secretsmanager:GetSecretValue"]
       Resource = [
         local.control_database_url_secret_arn,
+        local.mcp_oauth_state_key_secret_arn,
         local.vault_credentials_secret_arn,
       ]
     }]
@@ -119,6 +120,8 @@ resource "aws_lambda_function" "gateway" {
       OIDC_ISSUER_URL                         = local.oidc_issuer_url
       OIDC_CLIENT_ID                          = local.oidc_client_id
       OIDC_ACCESS_TOKEN_AUDIENCE              = local.oidc_access_token_audience
+      MCP_PUBLIC_URL                          = local.mcp_public_url
+      MCP_OAUTH_STATE_KEY_SECRET_ARN          = local.mcp_oauth_state_key_secret_arn
       OIDC_BOOTSTRAP_ADMIN_SUBJECTS           = join(",", local.oidc_bootstrap_admin_subjects)
       VAULT_ADDRESS                           = local.vault_address
       MAX_QUERY_ROWS                          = tostring(local.max_query_rows)

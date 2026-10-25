@@ -15,6 +15,8 @@ use crate::{api_error::ApiError, domain::OidcIdentity};
 pub struct OidcClient {
     issuer: String,
     audience: String,
+    authorization_endpoint: Url,
+    token_endpoint: Url,
     userinfo_endpoint: Url,
     jwks_endpoint: Url,
     jwks: Arc<RwLock<JwkSet>>,
@@ -26,13 +28,23 @@ pub struct OidcClient {
 pub enum OidcError {
     #[error("OIDC discovery failed")]
     Discovery,
+    #[error("OIDC token exchange failed")]
+    TokenExchange,
 }
 
 #[derive(Deserialize)]
 struct ProviderMetadata {
     issuer: String,
+    authorization_endpoint: Url,
+    token_endpoint: Url,
     userinfo_endpoint: Url,
     jwks_uri: Url,
+}
+
+#[derive(Deserialize)]
+pub struct TokenResponse {
+    pub access_token: String,
+    pub token_type: String,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +91,8 @@ impl OidcClient {
             .await
             .map_err(|_| OidcError::Discovery)?;
         if metadata.issuer != issuer.as_str()
+            || !is_secure_provider_endpoint(&metadata.authorization_endpoint)
+            || !is_secure_provider_endpoint(&metadata.token_endpoint)
             || !is_secure_provider_endpoint(&metadata.userinfo_endpoint)
             || !is_secure_provider_endpoint(&metadata.jwks_uri)
         {
@@ -92,6 +106,8 @@ impl OidcClient {
         Ok(Self {
             issuer: metadata.issuer,
             audience,
+            authorization_endpoint: metadata.authorization_endpoint,
+            token_endpoint: metadata.token_endpoint,
             userinfo_endpoint: metadata.userinfo_endpoint,
             jwks_endpoint: metadata.jwks_uri,
             jwks: Arc::new(RwLock::new(jwks)),
@@ -199,6 +215,68 @@ impl OidcClient {
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
+
+    pub fn authorization_url(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+        state: &str,
+        code_challenge: &str,
+        resource: &str,
+    ) -> Url {
+        let mut url = self.authorization_endpoint.clone();
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("scope", "openid profile email")
+            .append_pair("state", state)
+            .append_pair("code_challenge", code_challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("resource", resource);
+        url
+    }
+
+    pub async fn exchange_authorization_code(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+        code: &str,
+        code_verifier: &str,
+        resource: &str,
+    ) -> Result<TokenResponse, OidcError> {
+        let form = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("grant_type", "authorization_code"),
+                ("client_id", client_id),
+                ("redirect_uri", redirect_uri),
+                ("code", code),
+                ("code_verifier", code_verifier),
+                ("resource", resource),
+            ])
+            .finish();
+        let response = self
+            .client
+            .post(self.token_endpoint.clone())
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(form)
+            .send()
+            .await
+            .map_err(|_| OidcError::TokenExchange)?;
+        if !response.status().is_success() {
+            return Err(OidcError::TokenExchange);
+        }
+
+        let token = response
+            .json::<TokenResponse>()
+            .await
+            .map_err(|_| OidcError::TokenExchange)?;
+        if token.access_token.is_empty() || !token.token_type.eq_ignore_ascii_case("bearer") {
+            return Err(OidcError::TokenExchange);
+        }
+
+        Ok(token)
+    }
 }
 
 async fn fetch_jwks(client: &Client, endpoint: &Url) -> Result<JwkSet, OidcError> {
@@ -244,4 +322,117 @@ fn is_secure_provider_endpoint(url: &Url) -> bool {
     }
 
     url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+
+    use axum::{
+        Json, Router,
+        extract::{Form, State},
+        routing::{get, post},
+    };
+    use serde_json::{Value, json};
+    use tokio::net::TcpListener;
+    use url::Url;
+
+    use super::OidcClient;
+
+    #[derive(Clone)]
+    struct ProviderState {
+        issuer: String,
+        captured: Arc<Mutex<Option<HashMap<String, String>>>>,
+    }
+
+    async fn provider_metadata(State(state): State<ProviderState>) -> Json<Value> {
+        Json(json!({
+            "issuer": state.issuer,
+            "authorization_endpoint": format!("{}authorize", state.issuer),
+            "token_endpoint": format!("{}token", state.issuer),
+            "userinfo_endpoint": format!("{}userinfo", state.issuer),
+            "jwks_uri": format!("{}jwks", state.issuer)
+        }))
+    }
+
+    async fn jwks() -> Json<Value> {
+        Json(json!({"keys": []}))
+    }
+
+    async fn token_exchange(
+        State(state): State<ProviderState>,
+        Form(form): Form<HashMap<String, String>>,
+    ) -> Json<Value> {
+        *state.captured.lock().expect("capture lock is not poisoned") = Some(form);
+        Json(json!({"access_token": "fake-access-token", "token_type": "Bearer"}))
+    }
+
+    #[tokio::test]
+    async fn exchanges_code_with_pkce_against_a_local_fake_oidc_provider() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("local listener binds");
+        let address = listener.local_addr().expect("listener has an address");
+        let issuer = format!("http://{address}/");
+        let captured = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route("/.well-known/openid-configuration", get(provider_metadata))
+            .route("/jwks", get(jwks))
+            .route("/token", post(token_exchange))
+            .with_state(ProviderState {
+                issuer: issuer.clone(),
+                captured: captured.clone(),
+            });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("fake OIDC provider serves requests");
+        });
+
+        let client = OidcClient::discover(
+            Url::parse(&issuer).expect("issuer URL parses"),
+            "fake-gateway-audience".to_owned(),
+        )
+        .await
+        .expect("discovery accepts a loopback-only HTTP provider");
+        let token = client
+            .exchange_authorization_code(
+                "fake-client",
+                "http://127.0.0.1:45678/oauth/callback",
+                "single-use-code",
+                "pkce-verifier-material",
+                "https://mcp.example.test/mcp",
+            )
+            .await
+            .expect("fake provider returns its synthetic access token");
+
+        assert_eq!(token.access_token, "fake-access-token");
+        assert_eq!(token.token_type, "Bearer");
+        let form = captured
+            .lock()
+            .expect("capture lock is not poisoned")
+            .clone()
+            .expect("token endpoint captured the form");
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some("authorization_code")
+        );
+        assert_eq!(
+            form.get("code_verifier").map(String::as_str),
+            Some("pkce-verifier-material")
+        );
+        assert_eq!(
+            form.get("code").map(String::as_str),
+            Some("single-use-code")
+        );
+        assert_eq!(
+            form.get("resource").map(String::as_str),
+            Some("https://mcp.example.test/mcp")
+        );
+
+        server.abort();
+    }
 }

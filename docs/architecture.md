@@ -28,7 +28,7 @@ The deployment belongs inside the private network or VPN that can reach the targ
 
 ### Use a database
 
-1. The MCP host obtains a current OIDC access token for the person and sends it as a bearer token; the gateway validates it against the configured issuer and audience.
+1. For remote HTTP, the MCP host uses the gateway's OAuth authorization server, which authenticates the person through the configured OIDC issuer and issues a gateway-audience token. A current OIDC access token remains supported as a compatibility path. For stdio, `--login` obtains the same gateway OAuth token interactively and stores its renewable credentials in the OS keyring; `SQL_MCP_ACCESS_TOKEN` remains a deprecated compatibility path.
 2. The gateway resolves the issuer/subject, evaluates that user's grant for the requested target, and rejects missing or insufficient grants.
 3. The credential broker obtains a short-lived Vault lease for that target and access mode.
 4. The database connector opens a session using the unique temporary database identity. It never shares an authenticated session across users or access modes.
@@ -37,7 +37,7 @@ The deployment belongs inside the private network or VPN that can reach the targ
 
 ### Use the stdio transport
 
-The local stdio process uses the same authorization and database-credential implementation. The MCP host must inject a current user-scoped OIDC access token through `SQL_MCP_ACCESS_TOKEN`; this repository does not provide a browser/device login flow or OS credential-store integration. Do not store long-lived tokens in MCP configuration or process arguments.
+The local stdio process uses the same authorization and database-credential implementation. Run `sql-mcp-gateway --login <gateway-url>` to complete the gateway OAuth authorization-code/PKCE flow in a browser; the access and rotating refresh tokens are stored in the operating system credential store, not MCP configuration. Stdio refreshes tokens before expiry and serializes concurrent refreshes. `sql-mcp-gateway --logout <gateway-url>` revokes the refresh-token family when possible and removes local credentials. If the OS credential store is unavailable, login fails closed; there is no plaintext-file fallback. The deprecated `SQL_MCP_ACCESS_TOKEN` environment variable remains supported for migration only and receives no automatic refresh.
 
 ## Capability boundaries
 

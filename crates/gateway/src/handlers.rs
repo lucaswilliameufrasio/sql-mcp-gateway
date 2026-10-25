@@ -26,6 +26,8 @@ pub struct AuthConfigResponse {
     pub client_id: String,
     pub resource: String,
     pub scopes: [&'static str; 3],
+    pub mcp_endpoint: String,
+    pub oauth_authorization_metadata_url: String,
 }
 
 pub async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
@@ -34,6 +36,16 @@ pub async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigRespon
         client_id: state.oidc_client_id.to_string(),
         resource: state.oidc_access_token_audience.to_string(),
         scopes: ["openid", "profile", "email"],
+        mcp_endpoint: state
+            .mcp_public_url
+            .join("mcp")
+            .expect("configured MCP URL is valid")
+            .to_string(),
+        oauth_authorization_metadata_url: state
+            .mcp_public_url
+            .join(".well-known/oauth-authorization-server")
+            .expect("configured MCP URL is valid")
+            .to_string(),
     })
 }
 

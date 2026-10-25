@@ -49,6 +49,7 @@ locals {
 
   required_secret_arns = [
     local.control_database_url_secret_arn,
+    local.mcp_oauth_state_key_secret_arn,
     local.vault_admin_token_secret_arn,
     local.vault_runtime_token_secret_arn,
   ]
@@ -235,6 +236,7 @@ resource "aws_ecs_task_definition" "gateway" {
       { name = "OIDC_ISSUER_URL", value = local.oidc_issuer_url },
       { name = "OIDC_CLIENT_ID", value = local.oidc_client_id },
       { name = "OIDC_ACCESS_TOKEN_AUDIENCE", value = local.oidc_access_token_audience },
+      { name = "MCP_PUBLIC_URL", value = local.mcp_public_url },
       { name = "OIDC_BOOTSTRAP_ADMIN_SUBJECTS", value = join(",", local.oidc_bootstrap_admin_subjects) },
       { name = "VAULT_ADDRESS", value = local.vault_address },
       { name = "MAX_QUERY_ROWS", value = tostring(local.max_query_rows) },
@@ -243,6 +245,7 @@ resource "aws_ecs_task_definition" "gateway" {
 
     secrets = [
       { name = "CONTROL_DATABASE_URL", valueFrom = local.control_database_url_secret_arn },
+      { name = "MCP_OAUTH_STATE_KEY", valueFrom = local.mcp_oauth_state_key_secret_arn },
       { name = "VAULT_ADMIN_TOKEN", valueFrom = local.vault_admin_token_secret_arn },
       { name = "VAULT_RUNTIME_TOKEN", valueFrom = local.vault_runtime_token_secret_arn },
     ]

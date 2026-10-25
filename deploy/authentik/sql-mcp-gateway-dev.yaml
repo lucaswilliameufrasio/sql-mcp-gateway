@@ -42,6 +42,9 @@ entries:
         - matching_mode: strict
           url: !Env OIDC_REDIRECT_URI
           redirect_uri_type: authorization
+        - matching_mode: strict
+          url: !Env OIDC_MCP_REDIRECT_URI
+          redirect_uri_type: authorization
       signing_key: !Find
         - authentik_crypto.certificatekeypair
         - [name, authentik Self-signed Certificate]

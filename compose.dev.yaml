@@ -145,6 +145,7 @@ services:
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?run make dev-up to generate local settings}
       DEV_ADMIN_PASSWORD: ${DEV_ADMIN_PASSWORD:?run make dev-up to generate local settings}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}
+      OIDC_MCP_REDIRECT_URI: ${OIDC_MCP_REDIRECT_URI:?run make dev-up to generate local settings}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:?run make dev-up to generate local settings}
       AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
@@ -214,6 +215,8 @@ services:
       CONTROL_DATABASE_URL: postgres://sqlgateway:${CONTROL_DB_PASSWORD:?run make dev-up to generate local settings}@control-postgres:5432/sql_mcp_gateway?sslmode=disable
       MAX_QUERY_DURATION_SECONDS: "30"
       MAX_QUERY_ROWS: "200"
+      MCP_OAUTH_STATE_KEY: ${MCP_OAUTH_STATE_KEY:?run make dev-up to generate local settings}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:?run make dev-up to generate local settings}
       OIDC_ACCESS_TOKEN_AUDIENCE: ${OIDC_ACCESS_TOKEN_AUDIENCE:?run make dev-up to generate local settings}
       OIDC_BOOTSTRAP_ADMIN_SUBJECTS: ${OIDC_BOOTSTRAP_ADMIN_SUBJECTS:?run make dev-up to generate local settings}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}

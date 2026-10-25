@@ -67,7 +67,7 @@ The systemd templates assume these paths and service account names. The admin pr
 
 Create `/etc/sql-mcp-gateway/gateway.env` through your approved secret manager or root-controlled provisioning workflow. Set owner `root:sql-mcp-gateway` and mode `0640`. Do not put secret values in command arguments, the repository, or deployment notes.
 
-Set at least `CONTROL_DATABASE_URL`, `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`, `OIDC_BOOTSTRAP_ADMIN_SUBJECTS`, `VAULT_ADDRESS`, `VAULT_ADMIN_TOKEN`, and `VAULT_RUNTIME_TOKEN`. The Vault tokens must be distinct. `BIND_ADDRESS=127.0.0.1:8080` is already supplied by the gateway unit. The control URL must target the dedicated control-plane database, not a registered target.
+Set at least `CONTROL_DATABASE_URL`, `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`, `OIDC_BOOTSTRAP_ADMIN_SUBJECTS`, `MCP_PUBLIC_URL`, `MCP_OAUTH_STATE_KEY`, `VAULT_ADDRESS`, `VAULT_ADMIN_TOKEN`, and `VAULT_RUNTIME_TOKEN`. `MCP_PUBLIC_URL` must be the external HTTPS origin (no path), and the OIDC public client must allow the exact `${MCP_PUBLIC_URL}/oauth/callback` redirect URI. Generate at least 32 random bytes for `MCP_OAUTH_STATE_KEY`, deliver it as a secret, and keep it stable across replicas/restarts. The Vault tokens must be distinct. `BIND_ADDRESS=127.0.0.1:8080` is already supplied by the gateway unit. The control URL must target the dedicated control-plane database, not a registered target.
 
 Set `ORIGIN` in `deploy/vps/sql-mcp-admin.service` to the exact external HTTPS origin before installing the unit. This is used by the SvelteKit Node adapter and must match the OIDC redirect URI origin. Keep the original `HOST=127.0.0.1` and `PORT=3000` values.
 

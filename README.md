@@ -78,7 +78,7 @@ Review `.env` and fill it using your local secret-management workflow. `make set
 
 Set `CONTROL_DATABASE_URL` and `DATABASE_URL` to the **same dedicated PostgreSQL control-plane database**. The gateway reads `CONTROL_DATABASE_URL`; SQLx migrations use `DATABASE_URL`. Do not point either one at a registered target database.
 
-Also set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`, and `OIDC_BOOTSTRAP_ADMIN_SUBJECTS` (the exact OIDC `sub` value for the first administrator; separate multiple subjects with commas), plus `VAULT_ADDRESS`, `VAULT_ADMIN_TOKEN`, and `VAULT_RUNTIME_TOKEN`. The Vault tokens must be distinct; the runtime token should only issue and revoke approved database leases. The app loads `.env` for local runs, and SQLx reads `DATABASE_URL` from it for the migration targets below. `.env` is ignored by Git; never commit resolved credentials.
+Also set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`, and `OIDC_BOOTSTRAP_ADMIN_SUBJECTS` (the exact OIDC `sub` value for the first administrator; separate multiple subjects with commas), plus `MCP_PUBLIC_URL` (the externally reachable HTTPS origin of the gateway) and a randomly generated `MCP_OAUTH_STATE_KEY` of at least 32 bytes. Add `${MCP_PUBLIC_URL}/oauth/callback` as an exact redirect URI to the configured public OIDC client. Keep the state key in the approved secret store and stable across restarts; rotating it invalidates in-flight browser authorization requests. Also set `VAULT_ADDRESS`, `VAULT_ADMIN_TOKEN`, and `VAULT_RUNTIME_TOKEN`. The Vault tokens must be distinct; the runtime token should only issue and revoke approved database leases. The app loads `.env` for local runs, and SQLx reads `DATABASE_URL` from it for the migration targets below. `.env` is ignored by Git; never commit resolved credentials.
 
 For local development only, the gateway permits plain HTTP OIDC/Vault URLs on loopback addresses such as `http://127.0.0.1:8200`. Remote OIDC and Vault endpoints must use HTTPS. Configure the OIDC client with this exact development redirect URI:
 
@@ -126,15 +126,32 @@ curl -i http://127.0.0.1:8080/readyz
 
 #### 6. Connect an MCP client
 
-Configure the client to send authenticated JSON-RPC `POST` requests to:
+For remote MCP clients, use the HTTPS endpoint and let the client discover OAuth from the gateway. The **Conectar MCP** page in the admin UI provides copyable OpenCode V2 and Claude Code setup. OpenCode uses `mcp.servers` with `type: "remote"` and `url`; OAuth is enabled by default. Claude Code can be added with `claude mcp add --transport http <name> <MCP_PUBLIC_URL>/mcp`. Both clients open a browser to sign in; no bearer token belongs in their shared config. The gateway's OAuth access tokens represent the signed-in principal and do not change per-user/per-database grants.
+
+The raw MCP endpoint is:
 
 ```text
-http://127.0.0.1:8080/mcp
+${MCP_PUBLIC_URL}/mcp
 ```
 
-It must send an OIDC **access token** whose audience matches `OIDC_ACCESS_TOKEN_AUDIENCE` as `Authorization: Bearer …`, with `Content-Type: application/json` and `Accept: application/json`. Use the deployment's HTTPS origin outside local development. Confirm that the client supports this request/response HTTP transport; full Streamable HTTP sessions/SSE are not implemented here.
+For the local stack, `MCP_PUBLIC_URL` defaults to `http://127.0.0.1:8080`; deployments must use their externally reachable HTTPS origin.
 
-The alternative stdio mode is `make run-stdio`. The MCP client must inject a current OIDC access token as `SQL_MCP_ACCESS_TOKEN` into that process; do not save a long-lived token in the repository or a shared shell command.
+Clients should use the OAuth flow above. Manually supplied OIDC access tokens are retained only as a compatibility path; they must have the configured audience and must not be saved in shared config. The endpoint currently handles authenticated JSON-RPC `POST` requests with JSON content negotiation; full Streamable HTTP sessions/SSE are not implemented.
+
+The alternative stdio mode now supports an assisted browser login and automatic refresh through the gateway OAuth broker:
+
+```sh
+cargo run -p sql-mcp-gateway -- --login "${MCP_PUBLIC_URL}"
+cargo run -p sql-mcp-gateway -- --stdio
+```
+
+Login stores the access and rotating refresh tokens in the operating system credential store, scoped to that gateway URL. Logout revokes the refresh-token family when the gateway is reachable and removes the local entry:
+
+```sh
+cargo run -p sql-mcp-gateway -- --logout "${MCP_PUBLIC_URL}"
+```
+
+The stdio process still needs the gateway's operational runtime configuration (control database and Vault access) to execute queries. The credential store must be available and unlocked; the process fails closed rather than writing tokens to a plaintext file. `SQL_MCP_ACCESS_TOKEN` remains temporarily supported for existing installations, but is deprecated and does not refresh automatically.
 
 ## Deploy
 

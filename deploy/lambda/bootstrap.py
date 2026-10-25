@@ -51,6 +51,9 @@ def main() -> None:
         os.environ["CONTROL_DATABASE_URL"] = required_secret(
             client, "CONTROL_DATABASE_URL_SECRET_ARN"
         )
+        os.environ["MCP_OAUTH_STATE_KEY"] = required_secret(
+            client, "MCP_OAUTH_STATE_KEY_SECRET_ARN"
+        )
 
         vault_secret_text = required_secret(client, "VAULT_CREDENTIALS_SECRET_ARN")
         try:

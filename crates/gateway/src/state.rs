@@ -1,7 +1,9 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 
 use sqlx::PgPool;
+use url::Url;
 use vault_broker::VaultClient;
+use zeroize::Zeroizing;
 
 use crate::identity::OidcClient;
 
@@ -12,6 +14,8 @@ pub struct AppState {
     pub oidc: Arc<OidcClient>,
     pub oidc_client_id: Arc<str>,
     pub oidc_access_token_audience: Arc<str>,
+    pub mcp_public_url: Arc<Url>,
+    pub mcp_oauth_state_key: Arc<Zeroizing<String>>,
     pub bootstrap_admin_subjects: Arc<HashSet<String>>,
     pub vault_admin: Arc<VaultClient>,
     pub vault_runtime: Arc<VaultClient>,

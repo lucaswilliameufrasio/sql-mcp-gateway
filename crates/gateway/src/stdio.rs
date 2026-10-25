@@ -1,20 +1,17 @@
+use crate::{
+    auth::authenticate_access_token,
+    mcp::dispatch_stdio_line,
+    oauth,
+    state::AppState,
+    stdio_auth::{StdioAuthError, TokenProvider},
+};
 use futures_util::StreamExt;
 use tokio::io::{AsyncWriteExt, stdin, stdout};
 use tokio_util::codec::{FramedRead, LinesCodec};
-use zeroize::Zeroizing;
-
-use crate::{auth::authenticate_access_token, mcp::dispatch_stdio_line, state::AppState};
 
 const MAX_LINE_BYTES: usize = 256 * 1024;
 
-pub async fn run(state: AppState) {
-    let access_token = match std::env::var("SQL_MCP_ACCESS_TOKEN") {
-        Ok(token) if !token.trim().is_empty() => Zeroizing::new(token),
-        _ => {
-            tracing::error!("SQL_MCP_ACCESS_TOKEN is required in stdio mode");
-            return;
-        }
-    };
+pub async fn run(state: AppState, token_provider: TokenProvider) {
     let mut lines = FramedRead::new(stdin(), LinesCodec::new_with_max_length(MAX_LINE_BYTES));
     let mut output = stdout();
 
@@ -30,7 +27,24 @@ pub async fn run(state: AppState) {
             }
         };
 
-        let identity = authenticate_access_token(&state, access_token.as_str()).await;
+        let identity = match token_provider.access_token().await {
+            Ok(access_token) if access_token.starts_with("sgmcp_") => {
+                oauth::authenticate_access_token(
+                    &state.control_pool,
+                    access_token.as_str(),
+                    &state.mcp_public_url,
+                )
+                .await
+                .map_err(|_| crate::api_error::ApiError::Unauthorized)
+            }
+            Ok(access_token) => authenticate_access_token(&state, access_token.as_str()).await,
+            Err(error) => {
+                if !matches!(&error, StdioAuthError::NotLoggedIn) {
+                    tracing::error!(error = %error, "stdio OAuth token unavailable");
+                }
+                Err(crate::api_error::ApiError::Unauthorized)
+            }
+        };
         let response = match identity {
             Ok(actor) => dispatch_stdio_line(&state, &actor, &line).await,
             Err(_) => stdio_auth_error(&line),

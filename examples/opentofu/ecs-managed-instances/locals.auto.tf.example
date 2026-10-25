@@ -18,6 +18,7 @@ locals {
 
   # Existing Secrets Manager entries; these values are ARNs, never secret contents.
   control_database_url_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/control-database-url-EXAMPLE"
+  mcp_oauth_state_key_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/mcp-oauth-state-key-EXAMPLE"
   vault_admin_token_secret_arn    = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/vault-admin-token-EXAMPLE"
   vault_runtime_token_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:sql-mcp-gateway/vault-runtime-token-EXAMPLE"
   secret_kms_key_arns             = []
@@ -25,6 +26,7 @@ locals {
   oidc_issuer_url               = "https://identity.example.internal/issuer"
   oidc_client_id                = "sql-mcp-gateway-admin"
   oidc_access_token_audience    = "sql-mcp-gateway"
+  mcp_public_url                = "https://mcp.example.internal"
   oidc_bootstrap_admin_subjects = ["REPLACE_WITH_EXACT_OIDC_SUBJECT"]
   vault_address                 = "https://vault.example.internal:8200"
 

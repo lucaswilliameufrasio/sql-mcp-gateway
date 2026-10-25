@@ -100,6 +100,9 @@
         <a class:active={page.url.pathname === '/'} href="/">
           <span class="nav-icon">⌂</span><span>Visão geral</span>
         </a>
+        <a class:active={page.url.pathname.startsWith('/connect')} href="/connect">
+          <span class="nav-icon">⌁</span><span>Conectar MCP</span>
+        </a>
         {#if session.currentPrincipal.platform_role === 'admin'}
           <a class:active={page.url.pathname.startsWith('/databases')} href="/databases">
             <span class="nav-icon">▤</span><span>Bancos de dados</span>

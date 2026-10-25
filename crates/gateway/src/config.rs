@@ -10,6 +10,8 @@ pub struct Settings {
     pub oidc_issuer: Url,
     pub oidc_client_id: String,
     pub oidc_access_token_audience: String,
+    pub mcp_public_url: Url,
+    pub mcp_oauth_state_key: Zeroizing<String>,
     pub bootstrap_admin_subjects: HashSet<String>,
     pub vault_address: Url,
     pub vault_admin_token: Zeroizing<String>,
@@ -30,6 +32,10 @@ pub enum ConfigError {
     MissingOidcClientId,
     #[error("OIDC_ACCESS_TOKEN_AUDIENCE is required")]
     MissingOidcAccessTokenAudience,
+    #[error("MCP_PUBLIC_URL must be an HTTPS origin, except on loopback for local development")]
+    InvalidMcpPublicUrl,
+    #[error("MCP_OAUTH_STATE_KEY must contain at least 32 bytes")]
+    InvalidMcpOauthStateKey,
     #[error("OIDC_BOOTSTRAP_ADMIN_SUBJECTS must contain at least one subject")]
     MissingBootstrapAdministrators,
     #[error("VAULT_ADDRESS must use HTTPS, except on loopback for local development")]
@@ -57,6 +63,12 @@ impl Settings {
             required_environment("OIDC_CLIENT_ID").ok_or(ConfigError::MissingOidcClientId)?;
         let oidc_access_token_audience = required_environment("OIDC_ACCESS_TOKEN_AUDIENCE")
             .ok_or(ConfigError::MissingOidcAccessTokenAudience)?;
+        let mcp_public_url = parse_mcp_public_url(
+            &required_environment("MCP_PUBLIC_URL").ok_or(ConfigError::InvalidMcpPublicUrl)?,
+        )?;
+        let mcp_oauth_state_key = required_environment("MCP_OAUTH_STATE_KEY")
+            .filter(|key| key.len() >= 32)
+            .ok_or(ConfigError::InvalidMcpOauthStateKey)?;
         let bootstrap_admin_subjects = std::env::var("OIDC_BOOTSTRAP_ADMIN_SUBJECTS")
             .unwrap_or_default()
             .split(',')
@@ -89,6 +101,8 @@ impl Settings {
             oidc_issuer,
             oidc_client_id,
             oidc_access_token_audience,
+            mcp_public_url,
+            mcp_oauth_state_key: Zeroizing::new(mcp_oauth_state_key),
             bootstrap_admin_subjects,
             vault_address,
             vault_admin_token: Zeroizing::new(vault_admin_token),
@@ -97,6 +111,25 @@ impl Settings {
             max_query_duration: Duration::from_secs(max_query_duration_seconds as u64),
         })
     }
+}
+
+fn parse_mcp_public_url(value: &str) -> Result<Url, ConfigError> {
+    let mut url = Url::parse(value).map_err(|_| ConfigError::InvalidMcpPublicUrl)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !has_secure_transport(&url)
+    {
+        return Err(ConfigError::InvalidMcpPublicUrl);
+    }
+    if url.path() != "/" {
+        return Err(ConfigError::InvalidMcpPublicUrl);
+    }
+    url.set_path("");
+    Ok(url)
 }
 
 fn required_environment(name: &str) -> Option<String> {
@@ -160,7 +193,9 @@ fn parse_bounded_number(
 mod tests {
     use url::Url;
 
-    use super::{has_secure_transport, is_loopback_host, vault_tokens_are_distinct};
+    use super::{
+        has_secure_transport, is_loopback_host, parse_mcp_public_url, vault_tokens_are_distinct,
+    };
 
     #[test]
     fn only_loopback_http_hosts_are_allowed_for_local_service_urls() {
@@ -184,5 +219,21 @@ mod tests {
         assert!(vault_tokens_are_distinct("admin-token", "runtime-token"));
         assert!(!vault_tokens_are_distinct("same-token", "same-token"));
         assert!(!vault_tokens_are_distinct("", "runtime-token"));
+    }
+
+    #[test]
+    fn mcp_public_url_must_be_a_secure_origin_without_path() {
+        let parsed =
+            parse_mcp_public_url("https://mcp.example.test/").expect("secure origin is accepted");
+        assert_eq!(parsed.as_str(), "https://mcp.example.test/");
+
+        assert_eq!(
+            parse_mcp_public_url("https://mcp.example.test/prefix"),
+            Err(super::ConfigError::InvalidMcpPublicUrl)
+        );
+        assert_eq!(
+            parse_mcp_public_url("http://mcp.example.test"),
+            Err(super::ConfigError::InvalidMcpPublicUrl)
+        );
     }
 }

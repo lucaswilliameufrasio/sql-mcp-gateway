@@ -6,9 +6,11 @@ mod domain;
 mod handlers;
 mod identity;
 mod mcp;
+mod oauth;
 mod sql_access;
 mod state;
 mod stdio;
+mod stdio_auth;
 
 use std::{sync::Arc, time::Duration};
 
@@ -41,6 +43,15 @@ enum StartupError {
     Server,
     #[error("unknown command line option")]
     InvalidArgument,
+    #[error(transparent)]
+    StdioOAuth(#[from] stdio_auth::StdioAuthError),
+}
+
+enum Command {
+    Http,
+    Stdio,
+    Login(String),
+    Logout(String),
 }
 
 #[tokio::main]
@@ -48,16 +59,31 @@ async fn main() -> Result<(), StartupError> {
     let _ = dotenvy::dotenv();
     initialize_tracing();
 
-    let stdio_mode = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [] => false,
-        [argument] if argument == "--stdio" => true,
+    let command = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => Command::Http,
+        [argument] if argument == "--stdio" => Command::Stdio,
+        [argument, server] if argument == "--login" => Command::Login(server.clone()),
+        [argument, server] if argument == "--logout" => Command::Logout(server.clone()),
         _ => return Err(StartupError::InvalidArgument),
     };
 
+    match &command {
+        Command::Login(server) => {
+            return stdio_auth::login(server).await.map_err(StartupError::from);
+        }
+        Command::Logout(server) => {
+            return stdio_auth::logout(server).await.map_err(StartupError::from);
+        }
+        Command::Http | Command::Stdio => {}
+    }
+
     let settings = Settings::from_environment()?;
     let state = create_state(settings).await?;
-    if stdio_mode {
-        stdio::run(state).await;
+    if matches!(command, Command::Stdio) {
+        let token_provider = stdio_auth::TokenProvider::load(state.mcp_public_url.as_str())
+            .await
+            .map_err(StartupError::from)?;
+        stdio::run(state, token_provider).await;
         return Ok(());
     }
 
@@ -94,6 +120,8 @@ async fn create_state(settings: Settings) -> Result<AppState, StartupError> {
         oidc: Arc::new(oidc),
         oidc_client_id: Arc::from(settings.oidc_client_id),
         oidc_access_token_audience: Arc::from(settings.oidc_access_token_audience),
+        mcp_public_url: Arc::new(settings.mcp_public_url),
+        mcp_oauth_state_key: Arc::new(settings.mcp_oauth_state_key),
         bootstrap_admin_subjects: Arc::new(settings.bootstrap_admin_subjects),
         vault_admin: Arc::new(vault_admin),
         vault_runtime: Arc::new(vault_runtime),
@@ -136,6 +164,7 @@ async fn serve_http(state: AppState) -> Result<(), StartupError> {
         .route("/readyz", get(readiness))
         .route("/v1/auth/config", get(handlers::auth_config))
         .merge(protected_routes)
+        .merge(oauth::routes())
         .with_state(state.clone());
     let listener = TcpListener::bind(state.bind_address)
         .await

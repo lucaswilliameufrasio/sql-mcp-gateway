@@ -60,4 +60,6 @@ export interface AuthConfig {
   client_id: string;
   resource: string;
   scopes: string[];
+  mcp_endpoint: string;
+  oauth_authorization_metadata_url: string;
 }

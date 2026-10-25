@@ -68,7 +68,7 @@ cd examples/opentofu/lambda-web-adapter-rds
 cp locals.auto.tf.example locals.auto.tf
 ```
 
-Edit `locals.auto.tf`: replace the image digest, private subnet/security group IDs, `execute-api` endpoint ID, both secret ARNs, OIDC values, exact bootstrap subject, and Vault URL. Tune memory, timeout, reserved concurrency, query duration, API throttles, stage name, and log retention. The file is ignored by Git; never put secret contents in it. These values include internal resource identifiers and the OIDC subject, so do not publish a customized copy.
+Edit `locals.auto.tf`: replace the image digest, private subnet/security group IDs, `execute-api` endpoint ID, secret ARNs (including the at-least-32-byte `MCP_OAUTH_STATE_KEY`), OIDC values, exact bootstrap subject, Vault URL, and the external HTTPS `mcp_public_url`. Allow `${mcp_public_url}/oauth/callback` as an exact OIDC client redirect URI and keep the state key stable across invocations/deployments. Tune memory, timeout, reserved concurrency, query duration, API throttles, stage name, and log retention. The file is ignored by Git; never put secret contents in it. These values include internal resource identifiers and the OIDC subject, so do not publish a customized copy.
 
 Before `tofu init`, configure your organization's encrypted, access-controlled, locked remote state backend in this example directory. The example intentionally does not choose a backend. Keep the generated `.terraform.lock.hcl` under version control for reproducible provider selection.
 
