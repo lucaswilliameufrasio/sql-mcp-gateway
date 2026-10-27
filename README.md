@@ -36,13 +36,13 @@ Start the separate development-only Compose services:
 make dev-up
 ```
 
-This creates `.env.dev` with owner-only permissions, `.dev/vault-runtime/runtime.env` for Vault's scoped runtime token, and `.dev/tls/` with local-only database certificates. These paths are ignored by Git; the existing `.env` is not read or overwritten. The stack uses Authentik, Vault dev mode, a dedicated control database, and TLS-enabled PostgreSQL/MySQL targets. It publishes Authentik, Vault, the gateway, and the admin UI only on `127.0.0.1`; the database targets are reachable only inside the Compose network. The stack defaults to Docker's `rootless` context; set `DOCKER_CONTEXT` only if you deliberately selected another context.
+This creates `.env.dev` with owner-only permissions, `.dev/vault-runtime/runtime.env` for Vault's scoped runtime token, and `.dev/tls/` with local-only database certificates. These paths are ignored by Git; the existing `.env` is not read or overwritten. The stack uses Authentik, Vault dev mode, a dedicated control database, and TLS-enabled PostgreSQL/MySQL targets. It publishes Authentik, Vault, the gateway, and the admin UI only on `127.0.0.1`; data targets are reachable only inside the Compose network. The stack defaults to Docker's `rootless` context; set `DOCKER_CONTEXT` only if you deliberately selected another context.
 
 #### 2. Authentik OIDC configuration (automatic)
 
-The Authentik worker imports `deploy/authentik/sql-mcp-gateway-dev.yaml` from the Compose stack. It creates the `sql-mcp-gateway-dev` public Authorization Code application/provider and the `dev-admin` test user, assigns that user to the application, selects Authentik's asymmetric self-signed key, and configures the `openid`, `profile`, and `email` scopes. The gateway's admin subject is `dev-admin`.
+The Authentik worker imports `deploy/authentik/sql-mcp-gateway-dev.yaml` from the Compose stack. It creates the `sql-mcp-gateway-dev` public Authorization Code application/provider, separate `nats-mcp-dev` and `valkey-mcp-dev` public providers for the standalone MCPs, and the `dev-admin` test user. The same local admin is assigned to all three applications; all use Authentik's asymmetric self-signed key and the `openid`, `profile`, and `email` scopes. The gateway and MCP admin subject is `dev-admin`.
 
-The OIDC defaults are issuer `http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/`, client ID and audience `sql-mcp-gateway-dev`, and redirect URI `http://127.0.0.1:5173/auth/callback`. The browser client sends S256 PKCE; Authentik 2026.8 validates PKCE when sent but does not provide a server-side option to require it. The Authentik worker healthcheck waits for issuer discovery, and the gateway depends on that healthcheck. No Authentik UI setup is required.
+The OIDC defaults are issuer `http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/`, client ID and audience `sql-mcp-gateway-dev`, and redirect URI `http://127.0.0.1:15173/auth/callback`. The browser client sends S256 PKCE; Authentik 2026.8 validates PKCE when sent but does not provide a server-side option to require it. The Authentik worker healthcheck waits for issuer discovery, and the gateway depends on that healthcheck. No Authentik UI setup is required.
 
 The generated `.env.dev` contains separate local-only passwords for `akadmin` and `dev-admin`. Use the `dev-admin` password from that owner-only file when signing in to the gateway; never paste either password into chat or commit them.
 
@@ -54,9 +54,9 @@ Start the gateway and admin UI together in Compose:
 make dev-app
 ```
 
-Open <http://127.0.0.1:5173> and sign in as `dev-admin`. `make dev-status` shows service status. Use `make dev-pause` and `make dev-resume` to pause/resume the stack without losing Vault's in-memory development state. `make admin-dev` remains available for the separate workflow that runs an admin UI on the host against services you already operate.
+Open <http://127.0.0.1:15173> and sign in as `dev-admin`. `make dev-status` shows service status. Use `make dev-pause` and `make dev-resume` to pause/resume the stack without losing Vault's in-memory development state. `make admin-dev` remains available for the separate workflow that runs an admin UI on the host against services you already operate.
 
-In **Databases**, register either sample target using the Compose service hostname and port: `target-postgres:5432` or `target-mysql:3306`. Use database `sql_mcp_gateway_dev`, the matching generated root credential from `.env.dev`, and the CA certificate at `.dev/tls/certs/ca.crt`. The local credentials and self-signed certificates are for this stack only.
+In **Databases**, register either sample target using the Compose service hostname and port: `target-postgres:5432` or `target-mysql:3306`. Use database `sql_mcp_gateway_dev`, the matching generated root credential from `.env.dev`, and the CA certificate at `.dev/tls/certs/ca.crt`. TLS verification is the default. For a database that does not support TLS, an administrator can explicitly select **Sem TLS** for that target; the UI warns that traffic is unencrypted, and the gateway does not silently downgrade. This Compose stack contains only the SQL gateway dependencies.
 
 The stack is not production-ready. Vault runs in dev mode with an in-memory store, the local Authentik bootstrap password is stored in `.env.dev`, and database TLS uses a local CA. Recreating Vault loses its database role configuration; targets must be registered again. Avoid Compose volume-removal commands unless you intentionally want to delete local database data.
 
@@ -83,7 +83,7 @@ Also set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_ACCESS_TOKEN_AUDIENCE`, and 
 For local development only, the gateway permits plain HTTP OIDC/Vault URLs on loopback addresses such as `http://127.0.0.1:8200`. Remote OIDC and Vault endpoints must use HTTPS. Configure the OIDC client with this exact development redirect URI:
 
 ```text
-http://127.0.0.1:5173/auth/callback
+http://127.0.0.1:15173/auth/callback
 ```
 
 #### 3. Create/update the control-plane schema
@@ -111,7 +111,7 @@ In terminal 2:
 make admin-dev
 ```
 
-Open <http://127.0.0.1:5173>. Check the gateway's unauthenticated health endpoints; both return HTTP `204` when healthy (readiness checks the control database only):
+Open <http://127.0.0.1:15173>. Check the gateway's unauthenticated health endpoints; both return HTTP `204` when healthy (readiness checks the control database only):
 
 ```sh
 curl -i http://127.0.0.1:8080/health
@@ -122,17 +122,19 @@ curl -i http://127.0.0.1:8080/readyz
 
 1. Sign in through the configured OIDC provider using the subject listed in `OIDC_BOOTSTRAP_ADMIN_SUBJECTS`. Its first authenticated request creates the principal and bootstraps it as a platform administrator.
 2. In **Databases**, register a reachable PostgreSQL or MySQL target. The gateway validates the connection and sends the supplied database administrator credential to Vault; it does not retain that password in its control database.
-3. Each user must sign in at least once so the gateway can create their principal. In **Access**, select that person and database, then grant `read` or `write`. No database access is granted by default; `write` includes read access and adds DML, but not DDL.
+3. Each user must sign in at least once so the gateway can create their principal. In **Access**, select that person and database, then grant `read` or `write`. Access is denied by default.
 
 #### 6. Connect an MCP client
 
 For remote MCP clients, use the HTTPS endpoint and let the client discover OAuth from the gateway. The **Conectar MCP** page in the admin UI provides copyable OpenCode V2 and Claude Code setup. OpenCode uses `mcp.servers` with `type: "remote"` and `url`; OAuth is enabled by default. Claude Code can be added with `claude mcp add --transport http <name> <MCP_PUBLIC_URL>/mcp`. Both clients open a browser to sign in; no bearer token belongs in their shared config. The gateway's OAuth access tokens represent the signed-in principal and do not change per-user/per-database grants.
 
-The raw MCP endpoint is:
+The SQL MCP endpoint is:
 
 ```text
 ${MCP_PUBLIC_URL}/mcp
 ```
+
+NATS and Valkey are independent services in [`nats-mcp`](../nats-mcp) and [`valkey-mcp`](../valkey-mcp). Each has its own process, control database, admin UI, endpoint, and release lifecycle; configure them from their respective repositories. The SQL gateway does not proxy or manage those MCPs.
 
 For the local stack, `MCP_PUBLIC_URL` defaults to `http://127.0.0.1:8080`; deployments must use their externally reachable HTTPS origin.
 
@@ -185,6 +187,7 @@ The OpenTofu examples are starting points, not validated production modules. The
 - `crates/gateway/migrations`: control-plane PostgreSQL schema.
 - `apps/admin`: SvelteKit administration UI.
 - `docs/architecture.md`: product boundaries and security invariants.
+- `docs/architecture/streaming-and-cache-mcps.md`: ownership and separation of the NATS and Valkey MCP services.
 - `docs/deployment/`: deployment procedures and OpenTofu examples.
 
 ## Tests and quality checks
@@ -198,8 +201,8 @@ cargo test --workspace
 cd apps/admin && pnpm check && pnpm test && pnpm lint && pnpm build
 ```
 
-`make test-integration` is separate and starts an isolated Docker Compose stack for Vault, PostgreSQL, MySQL and Keycloak. It requires Python 3 (stdlib only) in addition to Docker, OpenSSL and Cargo. It is not required to run the app locally; read the script and its cleanup behavior before opting in.
+`make test-integration` is separate and starts an isolated Docker Compose stack for Vault, PostgreSQL, MySQL, and Keycloak. It requires Python 3 (stdlib only) in addition to Docker, OpenSSL and Cargo. It is not required to run the app locally; read the script and its cleanup behavior before opting in.
 
-To opt in, run `make test-integration` from the repository root. The script generates test-only credentials and local TLS files under `/tmp/opencode`, binds service ports to loopback, uses fixed image versions from `compose.integration.yaml`, and removes its uniquely named containers, test volumes, and temporary credentials when it finishes. It does not use `.env` or connect to external databases.
+To opt in, run `make test-integration` from the repository root. The script generates test-only credentials and local TLS files under `/tmp/opencode`, binds service ports to loopback, uses fixed image versions from `compose.integration.yaml`, checks real database/OIDC behavior, and removes its uniquely named containers, test volumes, and temporary credentials when it finishes. It does not use `.env` or connect to external databases.
 
 Each run performs two passes. Besides real dynamic database leases, it runs the actual gateway binary against Keycloak discovery/JWKS, browser authorization-code/PKCE, signed-token/userinfo validation, consent, code reuse, token rotation/replay/revocation (including concurrent refresh), PostgreSQL grants, Origin checks, session isolation/expiry/admission/termination, POST/GET SSE, and a real stdio subprocess with no operator configuration. The temporary Keycloak realm's wildcard callback and loopback cookie policy are test-only and must not be copied to a deployment.

@@ -64,10 +64,25 @@ prepare_environment() {
                 exit 1
             fi
         else
-            printf 'OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback\n' >> "$env_file"
+            printf 'OIDC_REDIRECT_URI=http://127.0.0.1:15173/auth/callback\n' >> "$env_file"
+        fi
+        if grep -q '^OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback$' "$env_file"; then
+            sed -i 's#^OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback$#OIDC_REDIRECT_URI=http://127.0.0.1:15173/auth/callback#' "$env_file"
         fi
         if ! grep -q '^OIDC_MCP_REDIRECT_URI=' "$env_file"; then
             printf 'OIDC_MCP_REDIRECT_URI=http://127.0.0.1:8080/oauth/callback\n' >> "$env_file"
+        fi
+        if ! grep -q '^OIDC_NATS_MCP_ADMIN_REDIRECT_URI=' "$env_file"; then
+            printf 'OIDC_NATS_MCP_ADMIN_REDIRECT_URI=http://localhost:18180/auth/callback\n' >> "$env_file"
+        fi
+        if ! grep -q '^OIDC_NATS_MCP_REDIRECT_URI=' "$env_file"; then
+            printf 'OIDC_NATS_MCP_REDIRECT_URI=http://localhost:18180/oauth/callback\n' >> "$env_file"
+        fi
+        if ! grep -q '^OIDC_VALKEY_MCP_ADMIN_REDIRECT_URI=' "$env_file"; then
+            printf 'OIDC_VALKEY_MCP_ADMIN_REDIRECT_URI=http://localhost:18280/auth/callback\n' >> "$env_file"
+        fi
+        if ! grep -q '^OIDC_VALKEY_MCP_REDIRECT_URI=' "$env_file"; then
+            printf 'OIDC_VALKEY_MCP_REDIRECT_URI=http://localhost:18280/oauth/callback\n' >> "$env_file"
         fi
         if ! grep -q '^MCP_PUBLIC_URL=' "$env_file"; then
             printf 'MCP_PUBLIC_URL=http://127.0.0.1:8080\n' >> "$env_file"
@@ -84,6 +99,10 @@ prepare_environment() {
             echo ".env.dev contains an empty MCP_OAUTH_STATE_KEY; refusing to start the stack." >&2
             exit 1
         fi
+        command -v openssl >/dev/null 2>&1 || {
+            echo "OpenSSL is required to generate local integration credentials." >&2
+            exit 1
+        }
         chmod 600 "$env_file"
         return
     fi
@@ -114,8 +133,12 @@ DEV_ADMIN_PASSWORD=$dev_admin_password
 VAULT_DEV_ROOT_TOKEN_ID=$vault_root_token
 OIDC_ISSUER_URL=http://127.0.0.1:9000/application/o/sql-mcp-gateway-dev/
 OIDC_CLIENT_ID=sql-mcp-gateway-dev
-OIDC_REDIRECT_URI=http://127.0.0.1:5173/auth/callback
+OIDC_REDIRECT_URI=http://127.0.0.1:15173/auth/callback
 OIDC_MCP_REDIRECT_URI=http://127.0.0.1:8080/oauth/callback
+OIDC_NATS_MCP_ADMIN_REDIRECT_URI=http://localhost:18180/auth/callback
+OIDC_NATS_MCP_REDIRECT_URI=http://localhost:18180/oauth/callback
+OIDC_VALKEY_MCP_ADMIN_REDIRECT_URI=http://localhost:18280/auth/callback
+OIDC_VALKEY_MCP_REDIRECT_URI=http://localhost:18280/oauth/callback
 OIDC_ACCESS_TOKEN_AUDIENCE=sql-mcp-gateway-dev
 OIDC_BOOTSTRAP_ADMIN_SUBJECTS=dev-admin
 MCP_PUBLIC_URL=http://127.0.0.1:8080
@@ -267,7 +290,7 @@ case "${1:-}" in
         compose --profile app config --quiet
         start_infrastructure
         compose --profile app up --detach --build --wait gateway admin
-        echo "Gateway is running on http://127.0.0.1:8080 and admin UI on http://127.0.0.1:5173."
+        echo "Gateway is running on http://127.0.0.1:8080 and admin UI on http://127.0.0.1:15173."
         ;;
     status)
         require_environment

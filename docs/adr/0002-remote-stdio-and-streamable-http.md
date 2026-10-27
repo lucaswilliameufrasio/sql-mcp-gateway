@@ -17,6 +17,9 @@ replica changes but are not credentials: every request still authenticates.
 Initialization is followed by `notifications/initialized`; subsequent requests
 must carry the session and negotiated version. At most 16 live sessions per
 principal are admitted. Browser Origin must match the public gateway origin.
+The SQL gateway exposes only `/mcp`. NATS and Valkey were extracted into separate
+services and are documented in ADR 0003; their transport and OAuth sessions are
+owned by those repositories.
 
 For the MCP transport's backwards-compatibility rule, the negotiated version
 stored in the session also identifies the version if a client omits the

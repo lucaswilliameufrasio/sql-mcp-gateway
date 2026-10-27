@@ -202,7 +202,7 @@ async fn authorized_target(
     mode: QueryMode,
 ) -> Result<AuthorizedTarget, QueryError> {
     let row = sqlx::query_as::<_, AuthorizedTargetRow>(
-        "SELECT d.id, d.name, d.engine, d.host, d.port, d.database_name, d.schema_name, d.tls_ca_pem, \
+        "SELECT d.id, d.name, d.engine, d.host, d.port, d.database_name, d.schema_name, d.tls_mode, d.tls_ca_pem, \
                 d.enabled, d.created_at, d.vault_read_role, d.vault_write_role, g.access_level \
          FROM database_targets d \
          LEFT JOIN principal_database_grants g \
@@ -232,6 +232,7 @@ async fn authorized_target(
         port,
         database_name,
         schema_name,
+        tls_mode,
         tls_ca_pem,
         enabled,
         created_at,
@@ -249,6 +250,7 @@ async fn authorized_target(
             port,
             database_name,
             schema_name,
+            tls_mode,
             enabled,
             created_at,
         },
@@ -267,6 +269,7 @@ struct AuthorizedTargetRow {
     port: i32,
     database_name: String,
     schema_name: String,
+    tls_mode: String,
     tls_ca_pem: Option<String>,
     enabled: bool,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -334,8 +337,8 @@ async fn run_with_lease(
                 .port(u16::try_from(target.port).map_err(|_| QueryError::DatabaseFailure)?)
                 .database(&target.database_name)
                 .username(lease.username())
-                .password(lease.password())
-                .ssl_mode(PgSslMode::VerifyFull);
+                .password(lease.password());
+            options = options.ssl_mode(postgres_ssl_mode(&target.tls_mode));
             if let Some(ca_pem) = tls_ca_pem {
                 options = options.ssl_root_cert_from_pem(ca_pem.as_bytes().to_vec());
             }
@@ -356,8 +359,8 @@ async fn run_with_lease(
                 .port(u16::try_from(target.port).map_err(|_| QueryError::DatabaseFailure)?)
                 .database(&target.database_name)
                 .username(lease.username())
-                .password(lease.password())
-                .ssl_mode(MySqlSslMode::VerifyIdentity);
+                .password(lease.password());
+            options = options.ssl_mode(mysql_ssl_mode(&target.tls_mode));
             if let Some(ca_pem) = tls_ca_pem {
                 options = options.ssl_ca_from_pem(ca_pem.as_bytes().to_vec());
             }
@@ -372,6 +375,22 @@ async fn run_with_lease(
             pool.close().await;
             result
         }
+    }
+}
+
+fn postgres_ssl_mode(tls_mode: &str) -> PgSslMode {
+    if tls_mode == "disable" {
+        PgSslMode::Disable
+    } else {
+        PgSslMode::VerifyFull
+    }
+}
+
+fn mysql_ssl_mode(tls_mode: &str) -> MySqlSslMode {
+    if tls_mode == "disable" {
+        MySqlSslMode::Disabled
+    } else {
+        MySqlSslMode::VerifyIdentity
     }
 }
 
@@ -676,7 +695,24 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryError, QueryMode, hash_identifier, validate_query};
+    use super::{
+        MySqlSslMode, PgSslMode, QueryError, QueryMode, hash_identifier, mysql_ssl_mode,
+        postgres_ssl_mode, validate_query,
+    };
+
+    #[test]
+    fn target_tls_mode_is_applied_to_both_database_drivers() {
+        assert!(matches!(
+            postgres_ssl_mode("verify_full"),
+            PgSslMode::VerifyFull
+        ));
+        assert!(matches!(postgres_ssl_mode("disable"), PgSslMode::Disable));
+        assert!(matches!(
+            mysql_ssl_mode("verify_full"),
+            MySqlSslMode::VerifyIdentity
+        ));
+        assert!(matches!(mysql_ssl_mode("disable"), MySqlSslMode::Disabled));
+    }
 
     #[test]
     fn read_queries_only_allow_single_select_statements() {

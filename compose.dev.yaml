@@ -124,7 +124,7 @@ services:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:8200:8200"
       - "127.0.0.1:8080:8080"
-      - "127.0.0.1:5173:5173"
+      - "127.0.0.1:15173:5173"
     restart: unless-stopped
     shm_size: 512mb
     volumes:
@@ -147,6 +147,10 @@ services:
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?run make dev-up to generate local settings}
       OIDC_MCP_REDIRECT_URI: ${OIDC_MCP_REDIRECT_URI:?run make dev-up to generate local settings}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:?run make dev-up to generate local settings}
+      OIDC_NATS_MCP_ADMIN_REDIRECT_URI: ${OIDC_NATS_MCP_ADMIN_REDIRECT_URI:?run make dev-up to generate local settings}
+      OIDC_NATS_MCP_REDIRECT_URI: ${OIDC_NATS_MCP_REDIRECT_URI:?run make dev-up to generate local settings}
+      OIDC_VALKEY_MCP_ADMIN_REDIRECT_URI: ${OIDC_VALKEY_MCP_ADMIN_REDIRECT_URI:?run make dev-up to generate local settings}
+      OIDC_VALKEY_MCP_REDIRECT_URI: ${OIDC_VALKEY_MCP_REDIRECT_URI:?run make dev-up to generate local settings}
       AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
       AUTHENTIK_POSTGRESQL__NAME: authentik
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?run make dev-up to generate local settings}
@@ -235,6 +239,8 @@ services:
     depends_on:
       gateway:
         condition: service_started
+    environment:
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-ursoc.tailb475ac.ts.net}
     healthcheck:
       test:
         - CMD

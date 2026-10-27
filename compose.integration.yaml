@@ -44,7 +44,6 @@ services:
   mysql:
     image: mysql:8.4.7
     command:
-      - --require-secure-transport=ON
       - --ssl-ca=/certs/ca.crt
       - --ssl-cert=/certs/server.crt
       - --ssl-key=/certs/server.key

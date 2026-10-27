@@ -4,7 +4,7 @@ use axum::{
     Extension, Json,
     body::Bytes,
     extract::State,
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response, Sse, sse::Event},
 };
 use futures_util::stream;
@@ -173,6 +173,7 @@ pub async fn post_message(
     State(state): State<AppState>,
     Extension(actor): Extension<AuthenticatedPrincipal>,
     headers: HeaderMap,
+    _uri: Uri,
     body: Bytes,
 ) -> Response {
     if !json_content_type(&headers) {
@@ -200,7 +201,8 @@ pub async fn post_message(
         if headers.contains_key(SESSION_HEADER) || id.is_none() {
             return StatusCode::BAD_REQUEST.into_response();
         }
-        let result = mcp::initialize_result(request.get("params").unwrap_or(&Value::Null));
+        let params = request.get("params").unwrap_or(&Value::Null);
+        let result = mcp::initialize_result(params);
         let version = result["protocolVersion"]
             .as_str()
             .expect("initialize result includes a version");
@@ -241,7 +243,8 @@ pub async fn post_message(
     }
     let work = async move {
         let id = id.unwrap_or(Value::Null);
-        match mcp::dispatch_request(&state, &actor, request).await {
+        let result = mcp::dispatch_request(&state, &actor, request).await;
+        match result {
             Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
             Err((code, message)) => rpc_error(id, code, message),
         }
@@ -274,6 +277,7 @@ pub async fn terminate(
     State(state): State<AppState>,
     Extension(actor): Extension<AuthenticatedPrincipal>,
     headers: HeaderMap,
+    _uri: Uri,
 ) -> Response {
     let session = match session(&state, &actor, &headers).await {
         Ok(session) => session,
@@ -293,6 +297,7 @@ pub async fn listen(
     State(state): State<AppState>,
     Extension(actor): Extension<AuthenticatedPrincipal>,
     headers: HeaderMap,
+    _uri: Uri,
 ) -> Response {
     if !accepts(&headers, "text/event-stream") || headers.contains_key("last-event-id") {
         return StatusCode::BAD_REQUEST.into_response();
@@ -327,9 +332,13 @@ pub async fn listen(
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
             let authenticated = if token.starts_with("sgmcp_") {
-                oauth::authenticate_access_token(&state.control_pool, &token, &state.mcp_public_url)
-                    .await
-                    .is_ok()
+                oauth::authenticate_access_token(
+                    &state.control_pool,
+                    &token,
+                    &oauth::mcp_resource(&state.mcp_public_url, "sql"),
+                )
+                .await
+                .is_ok()
             } else {
                 auth::authenticate_access_token(&state, &token)
                     .await

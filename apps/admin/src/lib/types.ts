@@ -1,5 +1,6 @@
 export type PlatformRole = 'admin' | 'member';
 export type DatabaseEngine = 'postgresql' | 'mysql';
+export type DatabaseTlsMode = 'verify_full' | 'disable';
 export type AccessLevel = 'read' | 'write';
 
 export interface Principal {
@@ -33,6 +34,7 @@ export interface DatabaseTarget {
   port: number;
   database_name: string;
   schema_name: string;
+  tls_mode: DatabaseTlsMode;
   enabled: boolean;
   created_at: string;
   access_level?: AccessLevel;

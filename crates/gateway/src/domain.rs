@@ -11,6 +11,23 @@ pub enum DatabaseEngine {
     Mysql,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseTlsMode {
+    #[default]
+    VerifyFull,
+    Disable,
+}
+
+impl DatabaseTlsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::VerifyFull => "verify_full",
+            Self::Disable => "disable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Type, PartialEq, Eq)]
 #[sqlx(type_name = "access_level", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
@@ -58,6 +75,7 @@ pub struct DatabaseTarget {
     pub port: i32,
     pub database_name: String,
     pub schema_name: String,
+    pub tls_mode: String,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
 }

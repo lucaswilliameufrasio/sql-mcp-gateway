@@ -27,6 +27,7 @@ pub struct VaultDatabaseConfig<'a> {
     pub database_name: &'a str,
     pub username: &'a str,
     pub password: &'a str,
+    pub tls_enabled: bool,
     pub tls_ca_pem: Option<&'a str>,
     pub read_role: &'a str,
     pub write_role: &'a str,
@@ -129,16 +130,7 @@ impl VaultClient {
         }
 
         let endpoint = self.endpoint(&["database", "config", config.name])?;
-        let connection_url = match config.engine {
-            VaultDatabaseEngine::Postgresql => format!(
-                "postgresql://{{{{username}}}}:{{{{password}}}}@{}:{}/{}?sslmode=verify-full",
-                config.host, config.port, config.database_name
-            ),
-            VaultDatabaseEngine::Mysql => format!(
-                "{{{{username}}}}:{{{{password}}}}@tcp({}:{})/{}?tls=true",
-                config.host, config.port, config.database_name
-            ),
-        };
+        let connection_url = connection_url(&config);
         let plugin_name = match config.engine {
             VaultDatabaseEngine::Postgresql => "postgresql-database-plugin",
             VaultDatabaseEngine::Mysql => "mysql-database-plugin",
@@ -154,7 +146,11 @@ impl VaultClient {
             username: config.username,
             password: config.password,
             username_template,
-            tls_ca: config.tls_ca_pem,
+            tls_ca: if config.tls_enabled {
+                config.tls_ca_pem
+            } else {
+                None
+            },
             verify_connection: true,
         };
         let response = self
@@ -262,7 +258,9 @@ impl VaultClient {
             segments.pop_if_empty();
             segments.push("v1");
             for segment in path {
-                segments.push(segment);
+                for path_segment in segment.split('/') {
+                    segments.push(path_segment);
+                }
             }
         }
 
@@ -289,6 +287,27 @@ fn valid_database_name(name: &str) -> bool {
         && name
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn connection_url(config: &VaultDatabaseConfig<'_>) -> String {
+    match (config.engine, config.tls_enabled) {
+        (VaultDatabaseEngine::Postgresql, true) => format!(
+            "postgresql://{{{{username}}}}:{{{{password}}}}@{}:{}/{}?sslmode=verify-full",
+            config.host, config.port, config.database_name
+        ),
+        (VaultDatabaseEngine::Postgresql, false) => format!(
+            "postgresql://{{{{username}}}}:{{{{password}}}}@{}:{}/{}?sslmode=disable",
+            config.host, config.port, config.database_name
+        ),
+        (VaultDatabaseEngine::Mysql, true) => format!(
+            "{{{{username}}}}:{{{{password}}}}@tcp({}:{})/{}?tls=true",
+            config.host, config.port, config.database_name
+        ),
+        (VaultDatabaseEngine::Mysql, false) => format!(
+            "{{{{username}}}}:{{{{password}}}}@tcp({}:{})/{}",
+            config.host, config.port, config.database_name
+        ),
+    }
 }
 
 fn valid_connection_host(host: &str) -> bool {
@@ -408,6 +427,7 @@ mod tests {
     use zeroize::Zeroizing;
 
     use crate::{VaultClient, VaultError};
+    use crate::{VaultDatabaseConfig, VaultDatabaseEngine};
 
     #[derive(Clone)]
     struct TestState {
@@ -502,6 +522,46 @@ mod tests {
     fn test_client(address: Url) -> VaultClient {
         VaultClient::new(address, Zeroizing::new("synthetic-test-token".to_owned()))
             .expect("synthetic test client should be valid")
+    }
+
+    #[test]
+    fn database_connection_url_uses_only_the_selected_tls_mode() {
+        let mut config = VaultDatabaseConfig {
+            name: "synthetic-db",
+            engine: VaultDatabaseEngine::Postgresql,
+            host: "db.example.test",
+            port: 5432,
+            database_name: "analytics",
+            username: "synthetic-user",
+            password: "synthetic-password",
+            tls_enabled: true,
+            tls_ca_pem: None,
+            read_role: "synthetic-read",
+            write_role: "synthetic-write",
+        };
+
+        assert_eq!(
+            super::connection_url(&config),
+            "postgresql://{{username}}:{{password}}@db.example.test:5432/analytics?sslmode=verify-full"
+        );
+
+        config.tls_enabled = false;
+        assert_eq!(
+            super::connection_url(&config),
+            "postgresql://{{username}}:{{password}}@db.example.test:5432/analytics?sslmode=disable"
+        );
+
+        config.engine = VaultDatabaseEngine::Mysql;
+        assert_eq!(
+            super::connection_url(&config),
+            "{{username}}:{{password}}@tcp(db.example.test:5432)/analytics"
+        );
+
+        config.tls_enabled = true;
+        assert_eq!(
+            super::connection_url(&config),
+            "{{username}}:{{password}}@tcp(db.example.test:5432)/analytics?tls=true"
+        );
     }
 
     #[tokio::test]

@@ -67,6 +67,96 @@ entries:
     attrs:
       name: SQL MCP Gateway Development
       provider: !KeyOf sql-mcp-gateway-dev-provider
+  - model: authentik_providers_oauth2.oauth2provider
+    state: present
+    id: nats-mcp-dev-provider
+    identifiers:
+      name: NATS MCP Development
+    attrs:
+      authorization_flow: !Find
+        - authentik_flows.flow
+        - [slug, default-provider-authorization-explicit-consent]
+      invalidation_flow: !Find
+        - authentik_flows.flow
+        - [slug, default-provider-invalidation-flow]
+      client_type: public
+      grant_types:
+        - authorization_code
+      client_id: nats-mcp-dev
+      redirect_uris:
+        - matching_mode: strict
+          url: !Env OIDC_NATS_MCP_ADMIN_REDIRECT_URI
+          redirect_uri_type: authorization
+        - matching_mode: strict
+          url: !Env OIDC_NATS_MCP_REDIRECT_URI
+          redirect_uri_type: authorization
+      signing_key: !Find
+        - authentik_crypto.certificatekeypair
+        - [name, authentik Self-signed Certificate]
+      sub_mode: user_username
+      property_mappings:
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, openid]
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, profile]
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, email]
+  - model: authentik_core.application
+    state: present
+    id: nats-mcp-dev-application
+    identifiers:
+      slug: nats-mcp-dev
+    attrs:
+      name: NATS MCP Development
+      provider: !KeyOf nats-mcp-dev-provider
+  - model: authentik_providers_oauth2.oauth2provider
+    state: present
+    id: valkey-mcp-dev-provider
+    identifiers:
+      name: Valkey MCP Development
+    attrs:
+      authorization_flow: !Find
+        - authentik_flows.flow
+        - [slug, default-provider-authorization-explicit-consent]
+      invalidation_flow: !Find
+        - authentik_flows.flow
+        - [slug, default-provider-invalidation-flow]
+      client_type: public
+      grant_types:
+        - authorization_code
+      client_id: valkey-mcp-dev
+      redirect_uris:
+        - matching_mode: strict
+          url: !Env OIDC_VALKEY_MCP_ADMIN_REDIRECT_URI
+          redirect_uri_type: authorization
+        - matching_mode: strict
+          url: !Env OIDC_VALKEY_MCP_REDIRECT_URI
+          redirect_uri_type: authorization
+      signing_key: !Find
+        - authentik_crypto.certificatekeypair
+        - [name, authentik Self-signed Certificate]
+      sub_mode: user_username
+      property_mappings:
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, openid]
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, profile]
+        - !Find
+          - authentik_providers_oauth2.scopemapping
+          - [scope_name, email]
+  - model: authentik_core.application
+    state: present
+    id: valkey-mcp-dev-application
+    identifiers:
+      slug: valkey-mcp-dev
+    attrs:
+      name: Valkey MCP Development
+      provider: !KeyOf valkey-mcp-dev-provider
   - model: authentik_core.user
     state: present
     id: sql-mcp-gateway-dev-admin
@@ -81,6 +171,20 @@ entries:
     state: present
     identifiers:
       target: !KeyOf sql-mcp-gateway-dev-application
+      order: 0
+    attrs:
+      user: !KeyOf sql-mcp-gateway-dev-admin
+  - model: authentik_policies.policybinding
+    state: present
+    identifiers:
+      target: !KeyOf nats-mcp-dev-application
+      order: 0
+    attrs:
+      user: !KeyOf sql-mcp-gateway-dev-admin
+  - model: authentik_policies.policybinding
+    state: present
+    identifiers:
+      target: !KeyOf valkey-mcp-dev-application
       order: 0
     attrs:
       user: !KeyOf sql-mcp-gateway-dev-admin

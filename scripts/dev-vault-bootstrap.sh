@@ -15,6 +15,7 @@ path "database/creds/*" {
 path "sys/leases/revoke" {
   capabilities = ["update"]
 }
+
 POLICY
 
 runtime_environment=/vault-runtime/runtime.env

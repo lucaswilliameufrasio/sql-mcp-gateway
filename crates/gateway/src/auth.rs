@@ -22,7 +22,8 @@ pub async fn require_identity(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let is_mcp_request = request.uri().path() == "/mcp";
+    let is_mcp_request = request.uri().path().ends_with("/mcp");
+    let server_kind = "sql";
     if is_mcp_request && !crate::mcp_transport::valid_origin(request.headers(), &state) {
         return Ok(StatusCode::FORBIDDEN.into_response());
     }
@@ -34,34 +35,46 @@ pub async fn require_identity(
     let authorization = match authorization {
         Ok(authorization) => authorization,
         Err(error) if is_mcp_request => {
-            return Ok(mcp_unauthorized_response(&state, error));
+            return Ok(mcp_unauthorized_response(&state, error, server_kind));
         }
         Err(error) => return Err(error),
     };
     let Some(access_token) = authorization.strip_prefix("Bearer ") else {
         if is_mcp_request {
-            return Ok(mcp_unauthorized_response(&state, ApiError::Unauthorized));
+            return Ok(mcp_unauthorized_response(
+                &state,
+                ApiError::Unauthorized,
+                server_kind,
+            ));
         }
         return Err(ApiError::Unauthorized);
     };
     if access_token.trim().is_empty() || access_token.contains(char::is_whitespace) {
         if is_mcp_request {
-            return Ok(mcp_unauthorized_response(&state, ApiError::Unauthorized));
+            return Ok(mcp_unauthorized_response(
+                &state,
+                ApiError::Unauthorized,
+                server_kind,
+            ));
         }
         return Err(ApiError::Unauthorized);
     }
 
     let principal_result = if access_token.starts_with("sgmcp_") {
-        oauth::authenticate_access_token(&state.control_pool, access_token, &state.mcp_public_url)
-            .await
-            .map_err(|_| ApiError::Unauthorized)
+        oauth::authenticate_access_token(
+            &state.control_pool,
+            access_token,
+            &oauth::mcp_resource(&state.mcp_public_url, server_kind),
+        )
+        .await
+        .map_err(|_| ApiError::Unauthorized)
     } else {
         authenticate_access_token(&state, access_token).await
     };
     let principal = match principal_result {
         Ok(principal) => principal,
         Err(error) if is_mcp_request && matches!(error, ApiError::Unauthorized) => {
-            return Ok(mcp_unauthorized_response(&state, error));
+            return Ok(mcp_unauthorized_response(&state, error, server_kind));
         }
         Err(error) => return Err(error),
     };
@@ -69,7 +82,7 @@ pub async fn require_identity(
     Ok(next.run(request).await)
 }
 
-fn mcp_unauthorized_response(state: &AppState, error: ApiError) -> Response {
+fn mcp_unauthorized_response(state: &AppState, error: ApiError, server_kind: &str) -> Response {
     let mut response = if error.status() == StatusCode::UNAUTHORIZED {
         error.into_response()
     } else {
@@ -77,7 +90,7 @@ fn mcp_unauthorized_response(state: &AppState, error: ApiError) -> Response {
     };
     let metadata_url = state
         .mcp_public_url
-        .join(".well-known/oauth-protected-resource/mcp")
+        .join(oauth::protected_resource_metadata_path(server_kind).trim_start_matches('/'))
         .map(|url| url.to_string())
         .unwrap_or_else(|_| ".well-known/oauth-protected-resource".to_owned());
     let challenge = format!("Bearer resource_metadata=\"{metadata_url}\", scope=\"mcp\"");

@@ -145,4 +145,4 @@ done
 
 compose down --volumes --remove-orphans
 stack_started=0
-echo "Live database, Keycloak OAuth, Streamable HTTP and remote stdio suites passed twice; isolated resources were removed."
+echo "Live database, Keycloak OAuth, Streamable HTTP and remote stdio suites passed; isolated resources were removed."

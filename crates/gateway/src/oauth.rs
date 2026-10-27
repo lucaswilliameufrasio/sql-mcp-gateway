@@ -65,11 +65,23 @@ async fn authorization_metadata(State(state): State<AppState>) -> Json<serde_jso
 async fn resource_metadata(State(state): State<AppState>) -> Json<serde_json::Value> {
     let issuer = state.mcp_public_url.as_str().trim_end_matches('/');
     Json(json!({
-        "resource": endpoint(&state.mcp_public_url, "mcp"),
+        "resource": mcp_resource(&state.mcp_public_url, "sql"),
         "authorization_servers": [issuer],
         "scopes_supported": ["mcp"],
         "bearer_methods_supported": ["header"]
     }))
+}
+
+pub(crate) fn mcp_resource(public_url: &Url, _server_kind: &str) -> String {
+    endpoint(public_url, "mcp")
+}
+
+pub(crate) fn protected_resource_metadata_path(_server_kind: &str) -> &'static str {
+    "/.well-known/oauth-protected-resource/mcp"
+}
+
+fn is_supported_mcp_resource(public_url: &Url, resource: &str) -> bool {
+    mcp_resource(public_url, "sql") == resource
 }
 
 fn endpoint(base: &Url, path: &str) -> String {
@@ -232,7 +244,7 @@ async fn authorize(
             .code_challenge
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-        || request.resource != endpoint(&state.mcp_public_url, "mcp")
+        || !is_supported_mcp_resource(&state.mcp_public_url, &request.resource)
         || request.scope.as_deref().is_some_and(|scope| scope != "mcp")
     {
         return Err(OAuthError::InvalidRequest);
@@ -258,7 +270,7 @@ async fn authorize(
         derive_upstream_verifier(state.mcp_oauth_state_key.as_bytes(), &upstream_state)?;
     let upstream_challenge = code_challenge(&upstream_code_verifier);
     let upstream_state_hash = token_hash(&upstream_state);
-    let resource = endpoint(&state.mcp_public_url, "mcp");
+    let resource = request.resource;
     query(
         "INSERT INTO mcp_oauth_requests \
          (id, upstream_state_hash, client_id, redirect_uri, client_state, client_code_challenge, resource, expires_at) \
@@ -753,7 +765,7 @@ async fn issue_tokens(
 pub async fn authenticate_access_token(
     pool: &PgPool,
     token: &str,
-    public_url: &Url,
+    resource: &str,
 ) -> Result<AuthenticatedPrincipal, ()> {
     let row = query_as::<_, crate::domain::Principal>(
         "SELECT p.id, p.issuer, p.subject, p.email, p.display_name, p.platform_role, p.enabled, p.created_at, p.last_seen_at \
@@ -762,7 +774,7 @@ pub async fn authenticate_access_token(
            AND t.revoked_at IS NULL AND p.enabled = TRUE AND t.resource = $2",
     )
     .bind(token_hash(token))
-    .bind(endpoint(public_url, "mcp"))
+    .bind(resource)
     .fetch_optional(pool)
     .await
     .map_err(|_| ())?
@@ -900,7 +912,27 @@ impl IntoResponse for OAuthError {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_challenge, derive_upstream_verifier, html_escape, is_allowed_redirect_uri};
+    use super::{
+        code_challenge, derive_upstream_verifier, html_escape, is_allowed_redirect_uri,
+        is_supported_mcp_resource, mcp_resource, protected_resource_metadata_path,
+    };
+    use url::Url;
+
+    #[test]
+    fn sql_mcp_metadata_exposes_only_the_sql_resource() {
+        let public_url = Url::parse("https://gateway.example/").expect("valid gateway URL");
+        let sql = mcp_resource(&public_url, "sql");
+        assert_eq!(sql, "https://gateway.example/mcp");
+        assert!(is_supported_mcp_resource(&public_url, &sql));
+        assert!(!is_supported_mcp_resource(
+            &public_url,
+            "https://attacker.example/mcp"
+        ));
+        assert_eq!(
+            protected_resource_metadata_path("sql"),
+            "/.well-known/oauth-protected-resource/mcp"
+        );
+    }
 
     #[test]
     fn upstream_pkce_verifier_is_reproducible_and_not_stored_in_request_row() {

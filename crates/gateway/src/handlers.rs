@@ -6,8 +6,10 @@ use axum::{
     http::StatusCode,
 };
 use chrono::{DateTime, Utc};
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, query, query_as};
+use url::Url;
 use uuid::Uuid;
 use vault_broker::{VaultDatabaseConfig, VaultDatabaseEngine, VaultRoleConfig};
 use zeroize::Zeroizing;
@@ -16,7 +18,10 @@ use crate::{
     api_error::ApiError,
     audit::{AuditEvent, record_event},
     auth::{AuthenticatedPrincipal, ensure_admin},
-    domain::{AccessLevel, DatabaseEngine, DatabaseGrant, DatabaseTarget, PlatformRole, Principal},
+    domain::{
+        AccessLevel, DatabaseEngine, DatabaseGrant, DatabaseTarget, DatabaseTlsMode, PlatformRole,
+        Principal,
+    },
     state::AppState,
 };
 
@@ -145,7 +150,7 @@ pub async fn list_databases(
     let rows = if actor.0.platform_role == PlatformRole::Admin {
         query_as::<_, TargetGrantRow>(
             "SELECT d.id, d.name, d.engine, d.host, d.port, d.database_name, d.schema_name, \
-                    d.enabled, d.created_at, NULL::access_level AS access_level \
+                    d.tls_mode, d.enabled, d.created_at, NULL::access_level AS access_level \
              FROM database_targets d WHERE d.enabled = TRUE ORDER BY d.name",
         )
         .fetch_all(&state.control_pool)
@@ -153,7 +158,7 @@ pub async fn list_databases(
     } else {
         query_as::<_, TargetGrantRow>(
             "SELECT d.id, d.name, d.engine, d.host, d.port, d.database_name, d.schema_name, \
-                    d.enabled, d.created_at, g.access_level \
+                    d.tls_mode, d.enabled, d.created_at, g.access_level \
              FROM database_targets d \
              JOIN principal_database_grants g ON g.database_id = d.id \
              WHERE d.enabled = TRUE AND g.principal_id = $1 ORDER BY d.name",
@@ -184,7 +189,7 @@ pub async fn list_targets_admin(
 ) -> Result<Json<Vec<DatabaseTarget>>, ApiError> {
     ensure_admin(&actor.0)?;
     let targets = query_as::<_, DatabaseTarget>(
-        "SELECT id, name, engine, host, port, database_name, schema_name, enabled, created_at \
+        "SELECT id, name, engine, host, port, database_name, schema_name, tls_mode, enabled, created_at \
          FROM database_targets ORDER BY name",
     )
     .fetch_all(&state.control_pool)
@@ -203,6 +208,7 @@ struct TargetGrantRow {
     port: i32,
     database_name: String,
     schema_name: String,
+    tls_mode: String,
     enabled: bool,
     created_at: DateTime<Utc>,
     access_level: Option<AccessLevel>,
@@ -218,6 +224,7 @@ impl TargetGrantRow {
             port: self.port,
             database_name: self.database_name,
             schema_name: self.schema_name,
+            tls_mode: self.tls_mode,
             enabled: self.enabled,
             created_at: self.created_at,
         }
@@ -227,14 +234,24 @@ impl TargetGrantRow {
 #[derive(Deserialize)]
 pub struct RegisterTargetRequest {
     pub name: String,
-    pub engine: DatabaseEngine,
-    pub host: String,
-    pub port: u16,
-    pub database_name: String,
+    #[serde(default)]
+    pub engine: Option<DatabaseEngine>,
+    #[serde(default)]
+    pub database_url: Option<SensitiveInput>,
+    #[serde(default)]
+    pub tls_mode: Option<DatabaseTlsMode>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub database_name: Option<String>,
     #[serde(default)]
     pub schema_name: Option<String>,
-    pub root_username: String,
-    pub root_password: SensitiveInput,
+    #[serde(default)]
+    pub root_username: Option<String>,
+    #[serde(default)]
+    pub root_password: Option<SensitiveInput>,
     #[serde(default)]
     pub tls_ca_pem: Option<SensitiveInput>,
 }
@@ -255,9 +272,135 @@ impl TryFrom<String> for SensitiveInput {
 }
 
 impl SensitiveInput {
+    fn new(value: String) -> Result<Self, ApiError> {
+        if value.is_empty() || value.len() > 16_384 {
+            return Err(ApiError::InvalidRequest);
+        }
+        Ok(Self(Zeroizing::new(value)))
+    }
+
     fn expose(&self) -> &str {
         self.0.as_str()
     }
+}
+
+struct ResolvedTargetInput {
+    name: String,
+    engine: DatabaseEngine,
+    host: String,
+    port: u16,
+    database_name: String,
+    schema_name: Option<String>,
+    root_username: String,
+    root_password: SensitiveInput,
+    tls_ca_pem: Option<SensitiveInput>,
+    tls_mode: DatabaseTlsMode,
+}
+
+fn resolve_target_input(input: RegisterTargetRequest) -> Result<ResolvedTargetInput, ApiError> {
+    let RegisterTargetRequest {
+        name,
+        engine,
+        database_url,
+        tls_mode,
+        host,
+        port,
+        database_name,
+        schema_name,
+        root_username,
+        root_password,
+        tls_ca_pem,
+    } = input;
+    let tls_mode = tls_mode.unwrap_or_default();
+    if tls_mode == DatabaseTlsMode::Disable && tls_ca_pem.is_some() {
+        return Err(ApiError::InvalidRequest);
+    }
+
+    let (engine, host, port, database_name, root_username, root_password) =
+        if let Some(database_url) = database_url {
+            if engine.is_some()
+                || host.is_some()
+                || port.is_some()
+                || database_name.is_some()
+                || root_username.is_some()
+                || root_password.is_some()
+            {
+                return Err(ApiError::InvalidRequest);
+            }
+            let parsed = Url::parse(database_url.expose()).map_err(|_| ApiError::InvalidRequest)?;
+            let engine = match parsed.scheme() {
+                "postgres" | "postgresql" => DatabaseEngine::Postgresql,
+                "mysql" => DatabaseEngine::Mysql,
+                _ => return Err(ApiError::InvalidRequest),
+            };
+            if parsed.host_str().is_none()
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || parsed.password().is_none()
+                || parsed.username().is_empty()
+            {
+                return Err(ApiError::InvalidRequest);
+            }
+            let host = parsed
+                .host_str()
+                .ok_or(ApiError::InvalidRequest)?
+                .to_owned();
+            let port = parsed.port().unwrap_or(match engine {
+                DatabaseEngine::Postgresql => 5432,
+                DatabaseEngine::Mysql => 3306,
+            });
+            let database_name = parsed
+                .path()
+                .strip_prefix('/')
+                .filter(|path| !path.is_empty() && !path.contains('/'))
+                .and_then(|path| percent_decode_str(path).decode_utf8().ok())
+                .map(|path| path.into_owned())
+                .ok_or(ApiError::InvalidRequest)?;
+            let username = percent_decode_str(parsed.username())
+                .decode_utf8()
+                .map_err(|_| ApiError::InvalidRequest)?
+                .into_owned();
+            let password = percent_decode_str(parsed.password().ok_or(ApiError::InvalidRequest)?)
+                .decode_utf8()
+                .map_err(|_| ApiError::InvalidRequest)?
+                .into_owned();
+            (
+                engine,
+                host,
+                port,
+                database_name,
+                username,
+                SensitiveInput::new(password)?,
+            )
+        } else {
+            let engine = engine.ok_or(ApiError::InvalidRequest)?;
+            let host = host.ok_or(ApiError::InvalidRequest)?;
+            let port = port.ok_or(ApiError::InvalidRequest)?;
+            let database_name = database_name.ok_or(ApiError::InvalidRequest)?;
+            let root_username = root_username.ok_or(ApiError::InvalidRequest)?;
+            let root_password = root_password.ok_or(ApiError::InvalidRequest)?;
+            (
+                engine,
+                host,
+                port,
+                database_name,
+                root_username,
+                root_password,
+            )
+        };
+
+    Ok(ResolvedTargetInput {
+        name,
+        engine,
+        host,
+        port,
+        database_name,
+        schema_name,
+        root_username,
+        root_password,
+        tls_ca_pem,
+        tls_mode,
+    })
 }
 
 #[derive(Serialize)]
@@ -272,6 +415,7 @@ pub async fn register_target(
     Json(input): Json<RegisterTargetRequest>,
 ) -> Result<(StatusCode, Json<CreatedTargetResponse>), ApiError> {
     ensure_admin(&actor.0)?;
+    let input = resolve_target_input(input)?;
     validate_target_input(&input)?;
 
     let exists = query("SELECT 1 FROM database_targets WHERE name = $1")
@@ -313,6 +457,7 @@ pub async fn register_target(
                 database_name: input.database_name.trim(),
                 username: input.root_username.trim(),
                 password: input.root_password.expose(),
+                tls_enabled: input.tls_mode == DatabaseTlsMode::VerifyFull,
                 tls_ca_pem: input.tls_ca_pem.as_ref().map(SensitiveInput::expose),
                 read_role: &read_role,
                 write_role: &write_role,
@@ -363,8 +508,8 @@ pub async fn register_target(
         "INSERT INTO database_targets \
          (id, name, engine, host, port, database_name, schema_name, tls_mode, tls_ca_pem, \
           vault_connection_name, vault_read_role, vault_write_role, enabled, created_by) \
-         VALUES ($1, $2, $3::database_engine, $4, $5, $6, $7, 'verify_full', $8, $9, $10, $11, TRUE, $12) \
-         RETURNING id, name, engine, host, port, database_name, schema_name, enabled, created_at",
+         VALUES ($1, $2, $3::database_engine, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13) \
+         RETURNING id, name, engine, host, port, database_name, schema_name, tls_mode, enabled, created_at",
     )
     .bind(id)
     .bind(input.name.trim())
@@ -376,6 +521,7 @@ pub async fn register_target(
     .bind(i32::from(input.port))
     .bind(input.database_name.trim())
     .bind(schema_name)
+    .bind(input.tls_mode.as_str())
     .bind(input.tls_ca_pem.as_ref().map(SensitiveInput::expose))
     .bind(&connection_name)
     .bind(&read_role)
@@ -436,11 +582,12 @@ async fn cleanup_vault_target(
     }
 }
 
-fn validate_target_input(input: &RegisterTargetRequest) -> Result<(), ApiError> {
+fn validate_target_input(input: &ResolvedTargetInput) -> Result<(), ApiError> {
     if input.name.trim().is_empty()
         || input.name.trim().len() > 80
         || input.root_username.trim().is_empty()
         || input.root_username.trim().len() > 128
+        || input.port == 0
         || input.host.trim().is_empty()
         || input.host.len() > 253
         || !input
@@ -720,10 +867,12 @@ pub async fn list_audit_events(
     ensure_admin(&actor.0)?;
     let limit = input.limit.unwrap_or(100).clamp(1, 200);
     let events = query_as::<_, AuditEventView>(
-        "SELECT id, principal_id, issuer, subject, database_id, operation, access_level, \
-                outcome, error_code, query_fingerprint, database_principal, \
-                vault_lease_fingerprint, duration_ms, created_at \
-         FROM audit_events ORDER BY created_at DESC LIMIT $1",
+        "SELECT a.id, a.principal_id, a.issuer, a.subject, a.database_id, \
+                a.operation, a.access_level, \
+                a.outcome, a.error_code, a.query_fingerprint, a.database_principal, \
+                a.vault_lease_fingerprint, a.duration_ms, a.created_at \
+         FROM audit_events a WHERE a.database_id IS NOT NULL \
+         ORDER BY a.created_at DESC LIMIT $1",
     )
     .bind(limit)
     .fetch_all(&state.control_pool)
@@ -748,9 +897,12 @@ mod tests {
     use vault_broker::{VaultClient, VaultDatabaseConfig, VaultDatabaseEngine, VaultRoleConfig};
     use zeroize::Zeroizing;
 
-    use crate::domain::DatabaseEngine;
+    use crate::domain::{DatabaseEngine, DatabaseTlsMode};
 
-    use super::{role_statements, valid_identifier};
+    use super::{
+        RegisterTargetRequest, SensitiveInput, resolve_target_input, role_statements,
+        valid_identifier, validate_target_input,
+    };
 
     type IntegrationResult<T = ()> = Result<T, &'static str>;
 
@@ -761,6 +913,137 @@ mod tests {
         local_port: u16,
         root_username: &'a str,
         root_password: &'a str,
+    }
+
+    #[test]
+    fn database_url_resolves_engine_endpoint_and_decoded_credentials() {
+        let input = RegisterTargetRequest {
+            name: "warehouse".to_owned(),
+            engine: None,
+            database_url: Some(
+                SensitiveInput::try_from(
+                    "postgresql://report%40team:secret%2Fvalue@db.internal/analytics".to_owned(),
+                )
+                .expect("valid sensitive input"),
+            ),
+            tls_mode: None,
+            host: None,
+            port: None,
+            database_name: None,
+            schema_name: None,
+            root_username: None,
+            root_password: None,
+            tls_ca_pem: None,
+        };
+
+        let resolved = resolve_target_input(input).expect("valid PostgreSQL URL");
+        assert_eq!(resolved.engine, DatabaseEngine::Postgresql);
+        assert_eq!(resolved.tls_mode, DatabaseTlsMode::VerifyFull);
+        assert_eq!(resolved.host, "db.internal");
+        assert_eq!(resolved.port, 5432);
+        assert_eq!(resolved.database_name, "analytics");
+        assert_eq!(resolved.root_username, "report@team");
+        assert_eq!(resolved.root_password.expose(), "secret/value");
+    }
+
+    #[test]
+    fn database_url_can_explicitly_disable_tls_but_cannot_include_a_tls_ca() {
+        let input = RegisterTargetRequest {
+            name: "warehouse".to_owned(),
+            engine: None,
+            database_url: Some(
+                SensitiveInput::try_from(
+                    "postgresql://synthetic-user:synthetic-password@db.internal/analytics"
+                        .to_owned(),
+                )
+                .expect("synthetic URL is valid input"),
+            ),
+            tls_mode: Some(DatabaseTlsMode::Disable),
+            host: None,
+            port: None,
+            database_name: None,
+            schema_name: None,
+            root_username: None,
+            root_password: None,
+            tls_ca_pem: None,
+        };
+
+        let resolved = resolve_target_input(input).expect("explicit no-TLS mode is accepted");
+        assert_eq!(resolved.tls_mode, DatabaseTlsMode::Disable);
+
+        let input_with_ca = RegisterTargetRequest {
+            name: "warehouse".to_owned(),
+            engine: None,
+            database_url: Some(
+                SensitiveInput::try_from(
+                    "postgresql://synthetic-user:synthetic-password@db.internal/analytics"
+                        .to_owned(),
+                )
+                .expect("synthetic URL is valid input"),
+            ),
+            tls_mode: Some(DatabaseTlsMode::Disable),
+            host: None,
+            port: None,
+            database_name: None,
+            schema_name: None,
+            root_username: None,
+            root_password: None,
+            tls_ca_pem: Some(
+                SensitiveInput::try_from(
+                    "-----BEGIN CERTIFICATE-----\nsynthetic\n-----END CERTIFICATE-----".to_owned(),
+                )
+                .expect("synthetic CA is valid input"),
+            ),
+        };
+
+        assert!(resolve_target_input(input_with_ca).is_err());
+    }
+
+    #[test]
+    fn database_url_rejects_unsupported_schemes_queries_and_mixed_fields() {
+        let make_input = |database_url: &str, host: Option<&str>| RegisterTargetRequest {
+            name: "warehouse".to_owned(),
+            engine: None,
+            database_url: Some(
+                SensitiveInput::try_from(database_url.to_owned()).expect("valid sensitive input"),
+            ),
+            tls_mode: None,
+            host: host.map(str::to_owned),
+            port: None,
+            database_name: None,
+            schema_name: None,
+            root_username: None,
+            root_password: None,
+            tls_ca_pem: None,
+        };
+
+        assert!(
+            resolve_target_input(make_input(
+                "redis://user:password@db.internal/analytics",
+                None
+            ))
+            .is_err()
+        );
+        assert!(
+            resolve_target_input(make_input(
+                "postgres://user:password@db.internal/analytics?sslmode=disable",
+                None
+            ))
+            .is_err()
+        );
+        assert!(
+            resolve_target_input(make_input(
+                "postgres://user:password@db.internal/analytics",
+                Some("override.internal")
+            ))
+            .is_err()
+        );
+        let zero_port = resolve_target_input(make_input(
+            "postgres://user:password@db.internal:0/analytics",
+            None,
+        ))
+        .expect("URL syntax should parse before target validation");
+        assert!(validate_target_input(&zero_port).is_err());
     }
 
     #[test]
@@ -1231,6 +1514,34 @@ mod tests {
             DatabaseEngine::Postgresql => ("sql_mcp_gateway_it", "public"),
             DatabaseEngine::Mysql => ("sql_mcp_gateway_it", "sql_mcp_gateway_it"),
         };
+        let no_tls_connection_name = format!("mcp-it-no-tls-{suffix_prefix}-{suffix}");
+        if let Err(error) = admin
+            .configure_database(VaultDatabaseConfig {
+                name: &no_tls_connection_name,
+                engine: vault_engine,
+                host: target.vault_host,
+                port: match engine {
+                    DatabaseEngine::Postgresql => 5432,
+                    DatabaseEngine::Mysql => 3306,
+                },
+                database_name,
+                username: target.root_username,
+                password: target.root_password,
+                tls_enabled: false,
+                tls_ca_pem: None,
+                read_role: "synthetic-no-tls-read",
+                write_role: "synthetic-no-tls-write",
+            })
+            .await
+        {
+            eprintln!("no-TLS integration setup rejected: engine={engine:?}, error={error:?}");
+            return Err("Vault could not verify a local database with TLS explicitly disabled");
+        }
+        admin
+            .delete_database_config(&no_tls_connection_name)
+            .await
+            .map_err(|_| "Vault could not clean up the no-TLS integration connection")?;
+
         admin
             .configure_database(VaultDatabaseConfig {
                 name: &connection_name,
@@ -1243,6 +1554,7 @@ mod tests {
                 database_name,
                 username: target.root_username,
                 password: target.root_password,
+                tls_enabled: true,
                 tls_ca_pem: Some(tls_ca),
                 read_role: &read_role,
                 write_role: &write_role,

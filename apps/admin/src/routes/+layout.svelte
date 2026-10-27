@@ -42,22 +42,22 @@
 
 {#if session.isInitializing}
   <main class="boot-screen" aria-live="polite">
-    <div class="boot-mark">S<span>.</span></div>
+    <div class="boot-mark">DB</div>
     <p>Conectando ao plano de controle</p>
   </main>
 {:else if !session.currentPrincipal}
-  <main class="login-screen">
+  <main class="login-screen" data-product="sql">
     <section class="login-card">
       <div class="brand-lockup">
-        <div class="brand-mark">S<span>.</span></div>
+        <div class="brand-mark" aria-hidden="true">DB</div>
         <div>
           <p class="eyebrow">SQL MCP GATEWAY</p>
-          <p class="brand-subtitle">Private data access</p>
+          <p class="brand-subtitle">Acesso a bancos SQL</p>
         </div>
       </div>
       <div class="login-copy">
-        <p class="eyebrow">IDENTIDADE PRIMEIRO</p>
-        <h1>Seus dados.<br />Seu acesso.</h1>
+        <p class="eyebrow">ACESSO CORPORATIVO</p>
+        <h1>Acesso controlado<br />aos seus bancos.</h1>
         <p>
           Entre com a identidade corporativa. O acesso a cada banco é concedido individualmente e
           auditado.
@@ -72,46 +72,46 @@
       </button>
       <p class="login-footnote">A autenticação é feita pelo seu provedor OIDC.</p>
     </section>
-    <aside class="login-aside" aria-hidden="true">
+    <aside class="login-aside" data-product="sql" aria-hidden="true">
       <div class="signal-grid"></div>
       <div class="aside-caption">
         <span class="status-dot"></span>
-        <span>PRIVATE NETWORK / ZERO TRUST</span>
+        <span>REDE PRIVADA · ACESSO AUDITÁVEL</span>
       </div>
       <div class="aside-message">
-        <p class="eyebrow">GOVERNED QUERY ACCESS</p>
-        <p>Sem credenciais<br />compartilhadas.</p>
+        <p class="eyebrow">SQL MCP GATEWAY</p>
+        <p>Identidade, concessão e credencial temporária.</p>
       </div>
-      <div class="aside-meta"><span>01</span><span>02</span><span>03</span></div>
+      <div class="aside-meta"><span>Identidade</span><span>Concessão</span><span>Lease</span></div>
     </aside>
   </main>
 {:else}
-  <div class="application-shell">
+  <div class="application-shell" data-product="sql">
     <aside class="sidebar">
       <a class="brand-lockup sidebar-brand" href="/" aria-label="SQL MCP Gateway — início">
-        <div class="brand-mark">S<span>.</span></div>
+        <div class="brand-mark" aria-hidden="true">DB</div>
         <div>
           <p class="eyebrow">SQL MCP GATEWAY</p>
-          <p class="brand-subtitle">Control plane</p>
+          <p class="brand-subtitle">Plano de controle</p>
         </div>
       </a>
       <div class="sidebar-label">WORKSPACE</div>
       <nav aria-label="Navegação principal">
         <a class:active={page.url.pathname === '/'} href="/">
-          <span class="nav-icon">⌂</span><span>Visão geral</span>
+          <span class="nav-icon" aria-hidden="true">OV</span><span>Visão geral</span>
         </a>
         <a class:active={page.url.pathname.startsWith('/connect')} href="/connect">
-          <span class="nav-icon">⌁</span><span>Conectar MCP</span>
+          <span class="nav-icon" aria-hidden="true">API</span><span>Conectar MCP</span>
         </a>
         {#if session.currentPrincipal.platform_role === 'admin'}
           <a class:active={page.url.pathname.startsWith('/databases')} href="/databases">
-            <span class="nav-icon">▤</span><span>Bancos de dados</span>
+            <span class="nav-icon" aria-hidden="true">DB</span><span>Bancos de dados</span>
           </a>
           <a class:active={page.url.pathname.startsWith('/access')} href="/access">
-            <span class="nav-icon">⊞</span><span>Acessos</span>
+            <span class="nav-icon" aria-hidden="true">ACL</span><span>Acessos</span>
           </a>
           <a class:active={page.url.pathname.startsWith('/audit')} href="/audit">
-            <span class="nav-icon">≋</span><span>Auditoria</span>
+            <span class="nav-icon" aria-hidden="true">LOG</span><span>Auditoria</span>
           </a>
         {/if}
       </nav>

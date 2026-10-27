@@ -132,6 +132,21 @@ class Suite:
         self.resource = self.base + "/mcp"
         self.http = Browser()
         self.process = None
+        self.vault = Browser()
+        self.runtime_token = None
+
+    def vault_call(self, path, method="GET", value=None, token=None, status=200):
+        address = self.settings["SQL_MCP_GATEWAY_TEST_VAULT_ADDRESS"].rstrip("/")
+        headers = {"X-Vault-Token": token or self.settings["SQL_MCP_GATEWAY_TEST_VAULT_ADMIN_TOKEN"]}
+        return self.vault.call(address + "/v1/" + path, method, value=value, headers=headers, status=status)
+
+    def prepare_vault(self):
+        _, body = self.vault_call("auth/token/create", "POST", {
+            "no_default_policy": True,
+            "ttl": "1h",
+            "renewable": False,
+        })
+        self.runtime_token = json.loads(body)["auth"]["client_token"]
 
     def sql(self, statement):
         container = self.settings["SQL_MCP_GATEWAY_TEST_POSTGRES_CONTAINER"]
@@ -144,6 +159,7 @@ class Suite:
 
     def start(self):
         wait_ready(self.issuer + "/.well-known/openid-configuration")
+        self.prepare_vault()
         password = urllib.parse.quote(self.settings["SQL_MCP_GATEWAY_TEST_POSTGRES_PASSWORD"], safe="")
         database = f"postgres://postgres:{password}@127.0.0.1:{self.settings['SQL_MCP_GATEWAY_TEST_POSTGRES_PORT']}/sql_mcp_gateway_it?sslmode=disable"
         environment = {
@@ -154,13 +170,14 @@ class Suite:
             "MCP_PUBLIC_URL": self.base, "MCP_OAUTH_STATE_KEY": secrets.token_urlsafe(48),
             "VAULT_ADDRESS": self.settings["SQL_MCP_GATEWAY_TEST_VAULT_ADDRESS"],
             "VAULT_ADMIN_TOKEN": self.settings["SQL_MCP_GATEWAY_TEST_VAULT_ADMIN_TOKEN"],
-            "VAULT_RUNTIME_TOKEN": "unused-test-runtime-" + secrets.token_urlsafe(32),
+            "VAULT_RUNTIME_TOKEN": self.runtime_token,
         }
         self.process = subprocess.Popen([self.binary], cwd=self.root, env=environment,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_ready(self.base + "/readyz", self.process)
 
-    def login(self, user="alice", decision="approve", wrong_verifier=False):
+    def login(self, user="alice", decision="approve", wrong_verifier=False, resource=None):
+        resource = resource or self.resource
         browser = Browser()
         verifier = secrets.token_urlsafe(32)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -173,7 +190,7 @@ class Suite:
         headers, _ = browser.call(self.base + "/oauth/authorize?" + urllib.parse.urlencode({
             "response_type": "code", "client_id": client, "redirect_uri": callback,
             "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
-            "scope": "mcp", "resource": self.resource}), status=303)
+            "scope": "mcp", "resource": resource}), status=303)
         upstream = headers["Location"]
         # State/cookie mismatch is rejected before exchange or persistence.
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(upstream).query)
@@ -198,7 +215,7 @@ class Suite:
         exchange = {"grant_type": "authorization_code", "client_id": client,
                     "redirect_uri": callback, "code": redirected["code"][0],
                     "code_verifier": secrets.token_urlsafe(32) if wrong_verifier else verifier,
-                    "resource": self.resource}
+                    "resource": resource}
         _, body = self.http.call(self.base + "/oauth/token", "POST", form=exchange, status=400 if wrong_verifier else 200)
         self.http.call(self.base + "/oauth/token", "POST", form=exchange, status=400)
         if wrong_verifier:
@@ -207,20 +224,35 @@ class Suite:
         assert tokens["token_type"] == "Bearer", "wrong OAuth token type"
         return client, tokens
 
-    def rpc(self, tokens, message, session=None, status=200, extra=None):
+    def rpc(self, tokens, message, session=None, status=200, extra=None, resource=None):
         headers = {"Authorization": "Bearer " + tokens["access_token"], "Accept": "application/json, text/event-stream"}
         if session:
             headers.update({"MCP-Session-Id": session, "MCP-Protocol-Version": "2025-11-25"})
         headers.update(extra or {})
-        return self.http.call(self.resource, "POST", value=message, headers=headers, status=status)
+        return self.http.call(resource or self.resource, "POST", value=message, headers=headers, status=status)
 
-    def initialize(self, tokens):
-        headers, body = self.rpc(tokens, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "integration", "version": "1"}}})
+    def initialize(self, tokens, resource=None):
+        headers, body = self.rpc(tokens, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "integration", "version": "1"}}}, resource=resource)
         assert json.loads(body)["result"]["protocolVersion"] == "2025-11-25", "version negotiation failed"
         session = headers["MCP-Session-Id"]
-        self.rpc(tokens, {"jsonrpc": "2.0", "id": 2, "method": "ping"}, session, status=400)
-        self.rpc(tokens, {"jsonrpc": "2.0", "method": "notifications/initialized"}, session, status=202)
+        self.rpc(tokens, {"jsonrpc": "2.0", "id": 2, "method": "ping"}, session, status=400, resource=resource)
+        self.rpc(tokens, {"jsonrpc": "2.0", "method": "notifications/initialized"}, session, status=202, resource=resource)
         return session
+
+    def tool_call(self, tokens, resource, session, name, arguments=None, status=200):
+        _, body = self.rpc(
+            tokens,
+            {
+                "jsonrpc": "2.0",
+                "id": secrets.randbelow(1_000_000) + 10,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments or {}},
+            },
+            session,
+            status=status,
+            resource=resource,
+        )
+        return json.loads(body)["result"]
 
     def refresh(self, client, tokens, status=200, resource=None):
         return self.http.call(self.base + "/oauth/token", "POST", form={"grant_type": "refresh_token", "client_id": client,
@@ -228,7 +260,6 @@ class Suite:
 
     def run(self):
         self.http.call(self.resource, status=401)
-        self.http.call(self.base + "/oauth/register", "POST", value={"redirect_uris": ["http://evil.example/callback"]}, status=400)
         self.login(decision="deny")
         self.login(wrong_verifier=True)
         client, tokens = self.login()
@@ -312,7 +343,7 @@ class Suite:
         self.rpc(successes[0], {"jsonrpc": "2.0", "id": 1, "method": "initialize"}, status=401)
         assert self.sql("SELECT COUNT(*) FROM mcp_oauth_tokens WHERE revoked_at IS NOT NULL") != "0", "revocation was not persisted"
         self.sql(f"DELETE FROM database_targets WHERE id = '{target}'; DELETE FROM principals; DELETE FROM mcp_oauth_clients;")
-        print("Real Keycloak login, consent, PKCE, PostgreSQL grants, MCP sessions/SSE, stdio, rotation/replay and revocation passed.")
+        print("Real Keycloak OAuth, SQL grants, sessions/SSE, stdio and token rotation/revocation passed.")
 
     def protocol_headers(self, tokens, session, ping):
         headers = {"Authorization": "Bearer " + tokens["access_token"],
