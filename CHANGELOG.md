@@ -2,25 +2,66 @@
 
 All notable changes to SQL MCP Gateway will be documented in this file.
 
-## [0.2.0] - 2026-10-25
-
-### Features
-
-- Implement the self-hosted SQL MCP gateway.
-- Add VPS and AWS deployment templates and production Docker Compose deployment.
-- Add local setup and an Authentik-backed development stack.
-- Add an ECS Managed Instances validation sandbox.
-- Add OAuth onboarding for MCP clients.
-- Add Streamable HTTP and remote stdio support.
+## [0.3.0] - 2026-11-05
 
 ### Bug Fixes
 
-- Normalize MCP transport headers.
+- *(release)* Preserve TOML newline during version bump
+
+- *(release)* Normalize generated changelog whitespace
+
+
+### Chores
+
+- *(deps)* Refresh compatible Rust and admin dependencies
+
+
+### Features
+
+- Expand SQL gateway workflows and database connectivity
+
+- *(admin)* Redesign operator workflows and add usage metrics
+
+## [0.2.0] - 2026-10-25
+
+### Bug Fixes
+
+- *(mcp)* Normalize transport headers
+
+
+### CI / Build
+
+- Add pull request validation workflow
+
+- *(release)* Add binary release workflows
+
 
 ### Documentation
 
-- Clarify deployment setup and simplify OpenTofu inputs.
+- *(deployment)* Clarify setup and simplify OpenTofu inputs
+
+
+### Features
+
+- Implement self-hosted SQL MCP gateway
+
+- *(deploy)* Add VPS and AWS deployment templates
+
+- *(dev)* Add local setup target
+
+- *(dev)* Add Authentik-backed local stack
+
+- *(dev)* Provision local OIDC and admin via Compose
+
+- *(ecs-managed-instances)* Add validation sandbox
+
+- *(deploy)* Add production Docker Compose deployment
+
+- *(auth)* Add OAuth onboarding for MCP clients
+
+- *(mcp)* Add Streamable HTTP and remote stdio
+
 
 ### Styling
 
-- Format OpenTofu deployment examples.
+- *(opentofu)* Format deployment examples
