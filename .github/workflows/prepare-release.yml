@@ -94,8 +94,10 @@ jobs:
           section = re.search(r"(?ms)^\[workspace\.package\]\s*\n(.*?)(?=^\[|\Z)", text)
           if section is None:
               raise SystemExit("error: Cargo.toml has no [workspace.package] section")
+          # Restrict trailing whitespace to horizontal whitespace: `\s*`
+          # would consume the newline and join the next TOML table to this value.
           updated, count = re.subn(
-              r'(?m)^version\s*=\s*"[^"]+"\s*$',
+              r'(?m)^version[ \t]*=[ \t]*"[^"]+"[ \t]*$',
               f'version = "{version}"',
               section.group(1),
               count=1,
