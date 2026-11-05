@@ -76,7 +76,14 @@ jobs:
       - name: Generate changelog
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: git cliff --tag "v$VERSION" --output CHANGELOG.md
+        run: |
+          git cliff --tag "v$VERSION" --output CHANGELOG.md
+          python3 - <<'PY'
+          from pathlib import Path
+
+          changelog = Path("CHANGELOG.md")
+          changelog.write_text(changelog.read_text().rstrip() + "\n")
+          PY
 
       - name: Update package versions and lockfile
         env:
