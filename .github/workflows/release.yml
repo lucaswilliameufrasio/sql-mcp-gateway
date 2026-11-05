@@ -276,7 +276,13 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          mapfile -d '' release_assets < <(find artifacts -maxdepth 1 -type f -print0 | sort -z)
+          if [[ "${#release_assets[@]}" -eq 0 ]]; then
+            echo "error: no release asset files found" >&2
+            exit 1
+          fi
+
+          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" "${release_assets[@]}"
 
   announce:
     needs:
