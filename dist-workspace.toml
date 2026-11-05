@@ -3,6 +3,7 @@ members = ["cargo:crates/gateway"]
 
 [dist]
 cargo-dist-version = "0.33.1"
+allow-dirty = ["ci"]
 ci = "github"
 installers = ["shell", "powershell"]
 targets = [
