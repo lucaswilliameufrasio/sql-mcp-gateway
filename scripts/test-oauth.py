@@ -302,13 +302,14 @@ class Suite:
         principal = self.sql("SELECT id FROM principals WHERE display_name = 'alice Test'")
         assert uuid.UUID(principal), "missing Alice principal"
         target = str(uuid.uuid4())
-        self.sql(f"INSERT INTO database_targets (id,name,engine,host,port,database_name,tls_mode,vault_connection_name,vault_read_role,created_by) VALUES ('{target}','fixture-{target}','postgresql','127.0.0.1',5432,'unused','disable','connection-{target}','role-{target}','{principal}'); INSERT INTO principal_database_grants (principal_id,database_id,access_level,granted_by) VALUES ('{principal}','{target}','read','{principal}');")
+        self.sql(f"INSERT INTO database_targets (id,name,engine,host,port,database_name,tls_mode,vault_connection_name,vault_read_role,vault_write_role,created_by) VALUES ('{target}','fixture-{target}','postgresql','127.0.0.1',5432,'unused','disable','connection-{target}','role-{target}','write-role-{target}','{principal}'); INSERT INTO principal_database_grants (principal_id,database_id,access_level,granted_by) VALUES ('{principal}','{target}','read','{principal}');")
         _, body = self.rpc(tokens, {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "list_databases"}}, session)
         visible = json.loads(body)["result"]["structuredContent"]
         assert len(visible) == 1 and visible[0]["id"] == target, "persisted per-user grant not enforced"
         self.sql(f"DELETE FROM principal_database_grants WHERE database_id = '{target}'")
         _, body = self.rpc(tokens, {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "write_query", "arguments": {"database_id": target, "sql": "DELETE FROM example"}}}, session)
         assert json.loads(body)["result"]["isError"], "revoked grant allowed a query"
+        self.verify_metrics(tokens, bob, principal)
         self.http.call(self.resource, "DELETE", headers=auth_headers, status=204)
         assert stream.readline() == b"", "deleted session kept its SSE stream alive"
         stream.close()
@@ -344,6 +345,40 @@ class Suite:
         assert self.sql("SELECT COUNT(*) FROM mcp_oauth_tokens WHERE revoked_at IS NOT NULL") != "0", "revocation was not persisted"
         self.sql(f"DELETE FROM database_targets WHERE id = '{target}'; DELETE FROM principals; DELETE FROM mcp_oauth_clients;")
         print("Real Keycloak OAuth, SQL grants, sessions/SSE, stdio and token rotation/revocation passed.")
+
+    def verify_metrics(self, alice, bob, principal):
+        def metrics(tokens, query="", status=200):
+            headers, body = self.http.call(self.base + "/v1/metrics" + query,
+                headers={"Authorization": "Bearer " + tokens["access_token"]}, status=status)
+            if status == 200:
+                assert headers["Cache-Control"] == "no-store", "metrics may be cached across identities"
+            return json.loads(body)
+
+        self.http.call(self.base + "/v1/metrics", status=401)
+        personal = metrics(alice)
+        assert personal["scope"] == "personal" and "inventory" not in personal, "member received workspace inventory"
+        assert personal["summary"]["total_queries"] == 1 and personal["summary"]["denied_queries"] == 1, "recorded denied query missing"
+        assert personal["top_databases"] == [], "revoked database identity leaked through history"
+        assert len(personal["series"]) == 24, "default hourly series incomplete"
+        assert "p95_duration_ms" not in personal["summary"], "denied request polluted successful latency"
+        for period, buckets in (("7d", 7), ("30d", 30)):
+            response = metrics(alice, "?period=" + period)
+            assert response["period"] == period and len(response["series"]) == buckets, "wrong metrics period"
+        for query in ("?period=365d", "?period=", "?scope=workspace", "?principal_id=" + principal,
+                      "?period=24h&period=7d"):
+            assert metrics(bob, query, status=400)["error_code"] == "INVALID_REQUEST", "metrics parameter error bypassed API convention"
+        empty = metrics(bob)
+        assert empty["summary"]["total_queries"] == 0 and empty["top_errors"] == [], "another principal's activity leaked"
+        assert all(bucket["total_queries"] == 0 for bucket in empty["series"]), "empty series must retain zero buckets"
+        self.sql(f"UPDATE principals SET platform_role = 'admin' WHERE id = '{uuid.UUID(principal)}'")
+        try:
+            workspace = metrics(alice)
+            assert workspace["scope"] == "workspace" and "inventory" in workspace, "admin lacks workspace metrics"
+            assert workspace["summary"]["denied_queries"] >= 1, "workspace query counts incomplete"
+            assert workspace["inventory"]["active_databases"] == 1, "inventory snapshot incorrect"
+        finally:
+            self.sql(f"UPDATE principals SET platform_role = 'member' WHERE id = '{uuid.UUID(principal)}'")
+        assert metrics(alice)["scope"] == "personal", "role downgrade retained workspace metrics"
 
     def protocol_headers(self, tokens, session, ping):
         headers = {"Authorization": "Bearer " + tokens["access_token"],

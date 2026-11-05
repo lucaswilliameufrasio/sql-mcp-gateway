@@ -1,0 +1,44 @@
+Prévia isolada: dados sintéticos, sem autenticação ou gravação real.
+Viewport
+Tela
+Identidade
+Cenário
+Abrir prévia
+
+Viewport: 375px. Conteúdo: 375px. Sem overflow horizontal da página.
+
+Erros de execução nesta prévia: 0
+
+Verificar layouts e interações
+375px /: sem overflow
+375px /connect: sem overflow
+375px /databases: sem overflow
+375px /databases/new: sem overflow
+375px /access: sem overflow
+375px /audit: sem overflow
+768px /: sem overflow
+768px /connect: sem overflow
+768px /databases: sem overflow
+768px /databases/new: sem overflow
+768px /access: sem overflow
+768px /audit: sem overflow
+1024px /: sem overflow
+1024px /connect: sem overflow
+1024px /databases: sem overflow
+1024px /databases/new: sem overflow
+1024px /access: sem overflow
+1024px /audit: sem overflow
+375px /: sem overflow
+375px /: sem overflow
+375px /: sem overflow
+375px /: sem overflow
+375px /databases: sem overflow
+375px /databases/new: sem overflow
+375px /connect: sem overflow
+375px /databases: sem overflow
+375px /: sem overflow
+375px /access: sem overflow
+375px /audit: sem overflow
+375px /databases: sem overflow
+375px /audit: sem overflow
+92 verificações aprovadas. Fixtures somente; sem gravações ou login real.
