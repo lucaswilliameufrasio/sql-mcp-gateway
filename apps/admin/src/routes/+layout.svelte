@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
+  import Icon from '$lib/components/Icon.svelte';
   import {
     clearSessionError,
     initializeSession,
@@ -13,6 +14,18 @@
   let { children } = $props();
   let loginBusy = $state(false);
   let loginMessage = $state<string | undefined>();
+  const navigation = [
+    { href: '/', label: 'Visão geral', icon: 'home' },
+    { href: '/connect', label: 'Conectar MCP', icon: 'plug' },
+    { href: '/databases', label: 'Bancos de dados', icon: 'database' },
+    { href: '/access', label: 'Pessoas e acessos', icon: 'users' },
+    { href: '/audit', label: 'Auditoria', icon: 'audit' }
+  ] as const;
+  let currentPage = $derived(
+    navigation.find((item) =>
+      item.href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(item.href)
+    )?.label ?? 'Autenticação'
+  );
 
   onMount(() => {
     void initializeSession();
@@ -25,98 +38,108 @@
     try {
       await signIn();
     } catch {
-      loginMessage = 'Não foi possível iniciar o login. Verifique a configuração OIDC.';
+      loginMessage =
+        'Não foi possível iniciar o login. Verifique a configuração OIDC com o administrador.';
       loginBusy = false;
     }
-  }
-
-  async function handleSignOut(): Promise<void> {
-    await signOut();
   }
 </script>
 
 <svelte:head>
   <title>SQL MCP Gateway</title>
-  <meta name="description" content="Administração de acesso controlado a bancos de dados via MCP" />
+  <meta
+    name="description"
+    content="Conecte seu assistente a bancos SQL com acesso individual e auditável."
+  />
 </svelte:head>
 
 {#if session.isInitializing}
   <main class="boot-screen" aria-live="polite">
-    <div class="boot-mark">DB</div>
-    <p>Conectando ao plano de controle</p>
+    <div class="brand-mark"><Icon name="database" size={26} /></div>
+    <p>Preparando sua sessão…</p>
   </main>
 {:else if !session.currentPrincipal}
-  <main class="login-screen" data-product="sql">
+  <main class="login-screen">
     <section class="login-card">
       <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true">DB</div>
+        <div class="brand-mark"><Icon name="database" size={25} /></div>
         <div>
-          <p class="eyebrow">SQL MCP GATEWAY</p>
-          <p class="brand-subtitle">Acesso a bancos SQL</p>
+          <strong>SQL MCP Gateway</strong>
+          <p class="brand-subtitle">Seu ponto de acesso aos dados</p>
         </div>
       </div>
       <div class="login-copy">
-        <p class="eyebrow">ACESSO CORPORATIVO</p>
-        <h1>Acesso controlado<br />aos seus bancos.</h1>
+        <h1>Seus dados.<br />Seu assistente.<br />O acesso certo.</h1>
         <p>
-          Entre com a identidade corporativa. O acesso a cada banco é concedido individualmente e
-          auditado.
+          Conecte seu cliente MCP aos bancos da equipe, com sua identidade e apenas as permissões de
+          que você precisa.
         </p>
       </div>
-      {#if session.sessionError || loginMessage}
-        <p class="notice notice-error" role="alert">{loginMessage ?? session.sessionError}</p>
-      {/if}
-      <button class="button button-primary button-wide" onclick={handleSignIn} disabled={loginBusy}>
-        {loginBusy ? 'Redirecionando…' : 'Entrar com SSO'}
-        <span aria-hidden="true">↗</span>
-      </button>
-      <p class="login-footnote">A autenticação é feita pelo seu provedor OIDC.</p>
+      {#if session.sessionError || loginMessage}<p class="notice notice-error" role="alert">
+          {loginMessage ?? session.sessionError}
+        </p>{/if}
+      <button class="button button-primary button-wide" onclick={handleSignIn} disabled={loginBusy}
+        >{loginBusy ? 'Redirecionando…' : 'Entrar com SSO'}<Icon name="arrow" size={18} /></button
+      >
+      <p class="login-footnote">
+        <Icon name="shield" size={16} /> Use a conta da sua organização. Sem uma nova senha.
+      </p>
     </section>
-    <aside class="login-aside" data-product="sql" aria-hidden="true">
-      <div class="signal-grid"></div>
-      <div class="aside-caption">
-        <span class="status-dot"></span>
-        <span>REDE PRIVADA · ACESSO AUDITÁVEL</span>
+    <aside class="login-aside" aria-label="Como funciona o acesso">
+      <span class="login-aside-label">Do seu cliente ao banco, com controle.</span>
+      <div class="connection-diagram">
+        <div class="diagram-node">
+          <Icon name="plug" size={26} />
+          <div>
+            <strong>Seu cliente MCP</strong><span>OpenCode, Claude Code ou outro cliente</span>
+          </div>
+        </div>
+        <div class="diagram-line"><span>Login com sua identidade</span></div>
+        <div class="diagram-node diagram-gateway">
+          <Icon name="shield" size={28} />
+          <div><strong>SQL MCP Gateway</strong><span>Permissões por pessoa e por banco</span></div>
+        </div>
+        <div class="diagram-line"><span>Credenciais temporárias</span></div>
+        <div class="diagram-node">
+          <Icon name="database" size={26} />
+          <div><strong>PostgreSQL e MySQL</strong><span>Consultas e operações auditadas</span></div>
+        </div>
       </div>
-      <div class="aside-message">
-        <p class="eyebrow">SQL MCP GATEWAY</p>
-        <p>Identidade, concessão e credencial temporária.</p>
-      </div>
-      <div class="aside-meta"><span>Identidade</span><span>Concessão</span><span>Lease</span></div>
+      <p>Para quem opera, controle e rastreabilidade.<br />Para quem usa, uma conexão simples.</p>
     </aside>
   </main>
 {:else}
-  <div class="application-shell" data-product="sql">
+  <a class="skip-link" href="#main-content">Pular para o conteúdo</a>
+  <div class="application-shell">
     <aside class="sidebar">
-      <a class="brand-lockup sidebar-brand" href="/" aria-label="SQL MCP Gateway — início">
-        <div class="brand-mark" aria-hidden="true">DB</div>
+      <a class="brand-lockup sidebar-brand" href="/" aria-label="SQL MCP Gateway — início"
+        ><div class="brand-mark"><Icon name="database" size={23} /></div>
         <div>
-          <p class="eyebrow">SQL MCP GATEWAY</p>
-          <p class="brand-subtitle">Plano de controle</p>
-        </div>
-      </a>
-      <div class="sidebar-label">WORKSPACE</div>
+          <strong>SQL MCP</strong>
+          <p class="brand-subtitle">Gateway</p>
+        </div></a
+      >
       <nav aria-label="Navegação principal">
-        <a class:active={page.url.pathname === '/'} href="/">
-          <span class="nav-icon" aria-hidden="true">OV</span><span>Visão geral</span>
-        </a>
-        <a class:active={page.url.pathname.startsWith('/connect')} href="/connect">
-          <span class="nav-icon" aria-hidden="true">API</span><span>Conectar MCP</span>
-        </a>
-        {#if session.currentPrincipal.platform_role === 'admin'}
-          <a class:active={page.url.pathname.startsWith('/databases')} href="/databases">
-            <span class="nav-icon" aria-hidden="true">DB</span><span>Bancos de dados</span>
-          </a>
-          <a class:active={page.url.pathname.startsWith('/access')} href="/access">
-            <span class="nav-icon" aria-hidden="true">ACL</span><span>Acessos</span>
-          </a>
-          <a class:active={page.url.pathname.startsWith('/audit')} href="/audit">
-            <span class="nav-icon" aria-hidden="true">LOG</span><span>Auditoria</span>
-          </a>
-        {/if}
+        <p class="nav-group-label">Workspace</p>
+        {#each navigation as item, index}
+          {#if index < 2 || session.currentPrincipal.platform_role === 'admin'}
+            {#if index === 2}<p class="nav-group-label">Administração</p>{/if}
+            {@const active =
+              item.href === '/'
+                ? page.url.pathname === '/'
+                : page.url.pathname.startsWith(item.href)}
+            <a class:active href={item.href} aria-current={active ? 'page' : undefined}
+              ><Icon name={item.icon} size={19} /><span>{item.label}</span></a
+            >
+          {/if}
+        {/each}
       </nav>
       <div class="sidebar-bottom">
-        <div class="network-chip"><span class="status-dot"></span> Gateway privado</div>
+        <a class="sidebar-help" href="/connect"
+          ><Icon name="plug" size={18} />
+          <div><strong>Pronto para consultar?</strong><span>Configure seu cliente MCP</span></div>
+          <Icon name="chevron" size={15} /></a
+        >
         <div class="user-card">
           <div class="avatar">
             {(session.currentPrincipal.display_name ?? session.currentPrincipal.email ?? 'U')
@@ -128,28 +151,35 @@
               >{session.currentPrincipal.display_name ??
                 session.currentPrincipal.email ??
                 session.currentPrincipal.subject}</strong
-            >
-            <span
+            ><span
               >{session.currentPrincipal.platform_role === 'admin'
                 ? 'Administrador'
                 : 'Membro'}</span
             >
           </div>
-          <button class="icon-button" aria-label="Sair" title="Sair" onclick={handleSignOut}
-            >↗</button
+          <button
+            class="icon-button"
+            aria-label="Sair da conta"
+            title="Sair da conta"
+            onclick={signOut}><Icon name="logout" size={18} /></button
           >
         </div>
       </div>
     </aside>
-    <main class="main-panel">
+    <main class="main-panel" id="main-content" tabindex="-1">
       <header class="topbar">
-        <span
-          >PLANO DE CONTROLE <span class="crumb-separator">/</span>
-          {page.url.pathname === '/' ? 'INÍCIO' : page.url.pathname.slice(1).toUpperCase()}</span
-        >
-        <div class="topbar-state"><span class="status-dot"></span> Serviço conectado</div>
+        <div class="breadcrumbs">
+          <span>Workspace</span><Icon name="chevron" size={14} /><span>{currentPage}</span
+          >{#if page.url.pathname === '/databases/new'}<Icon name="chevron" size={14} /><span
+              >Novo banco</span
+            >{/if}
+        </div>
+        <span class="session-indicator"><Icon name="shield" size={15} /> Sessão autenticada</span>
       </header>
       <div class="page-content">{@render children()}</div>
+      <footer class="workspace-footer">
+        <span>SQL MCP Gateway</span><span>Acesso individual. Operações auditadas.</span>
+      </footer>
     </main>
   </div>
 {/if}

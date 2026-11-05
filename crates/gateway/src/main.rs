@@ -7,6 +7,7 @@ mod handlers;
 mod identity;
 mod mcp;
 mod mcp_transport;
+mod metrics;
 mod oauth;
 mod sql_access;
 mod state;
@@ -143,6 +144,7 @@ async fn serve_http(state: AppState) -> Result<(), StartupError> {
 fn app_router(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route("/v1/me", get(handlers::me))
+        .route("/v1/metrics", get(metrics::get_metrics))
         .route("/v1/databases", get(handlers::list_databases))
         .route("/v1/admin/principals", get(handlers::list_principals))
         .route(

@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verificação responsiva · Dados sintéticos</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        background: #dce3eb;
+        color: #172b3a;
+        font:
+          14px/1.5 system-ui,
+          sans-serif;
+      }
+      form {
+        display: flex;
+        align-items: end;
+        flex-wrap: wrap;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+      label {
+        display: grid;
+        gap: 4px;
+      }
+      select,
+      button {
+        min-height: 44px;
+        padding: 8px 12px;
+        border: 1px solid #8195aa;
+        border-radius: 6px;
+        background: white;
+        color: #172b3a;
+        font: inherit;
+      }
+      iframe {
+        display: block;
+        border: 1px solid #8195aa;
+        background: white;
+        margin: 16px auto;
+      }
+      p {
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <strong>Prévia isolada: dados sintéticos, sem autenticação ou gravação real.</strong>
+    <form id="controls">
+      <label
+        >Viewport<select id="width">
+          <option value="375">375px · celular</option>
+          <option value="768">768px · tablet</option>
+          <option value="1024">1024px · desktop</option>
+        </select></label
+      >
+      <label
+        >Tela<select id="route">
+          <option value="/">Visão geral</option>
+          <option value="/connect">Conectar MCP</option>
+          <option value="/databases">Bancos</option>
+          <option value="/databases/new">Cadastrar banco</option>
+          <option value="/access">Pessoas e acessos</option>
+          <option value="/audit">Auditoria</option>
+        </select></label
+      >
+      <label
+        >Identidade<select id="role">
+          <option value="admin">Administrador</option>
+          <option value="member">Membro</option>
+          <option value="logged-out">Sem sessão</option>
+        </select></label
+      >
+      <label
+        >Cenário<select id="scenario">
+          <option value="populated">Com dados</option>
+          <option value="empty">Vazio</option>
+          <option value="error">Falha</option>
+          <option value="malformed">Métricas inválidas</option>
+        </select></label
+      >
+      <button type="submit">Abrir prévia</button>
+    </form>
+    <p id="measurement" role="status">Carregando viewport…</p>
+    <p id="runtime-errors" role="status">Erros de execução nesta prévia: 0</p>
+    <p id="overflow-elements"></p>
+    <button id="regression" type="button">Verificar layouts e interações</button>
+    <pre id="regression-report" role="status"></pre>
+    <iframe
+      id="preview"
+      title="Aplicação em viewport de teste"
+      width="375"
+      height="900"
+      src="/?role=admin"
+    ></iframe>
+    <script type="module">
+      const form = document.getElementById('controls');
+      const frame = document.getElementById('preview');
+      const width = document.getElementById('width');
+      const route = document.getElementById('route');
+      const role = document.getElementById('role');
+      const scenario = document.getElementById('scenario');
+      const measurement = document.getElementById('measurement');
+      const errors = document.getElementById('runtime-errors');
+      const overflowElements = document.getElementById('overflow-elements');
+      let observer;
+      const regression = document.getElementById('regression');
+      const regressionReport = document.getElementById('regression-report');
+      async function runRegression() {
+        if (!(frame instanceof HTMLIFrameElement) || !regressionReport) {
+          throw new Error('Viewport indisponível.');
+        }
+        let passed = 0;
+        const results = [];
+        function assert(condition, description) {
+          if (!condition) {
+            throw new Error(description);
+          }
+          passed += 1;
+        }
+        async function tick() {
+          await new Promise((resolve) => frame.contentWindow.requestAnimationFrame(resolve));
+        }
+        async function open(route, size, identity = 'admin', state = 'populated') {
+          frame.width = String(size);
+          await new Promise((resolve) => {
+            frame.addEventListener('load', resolve, { once: true });
+            frame.src = `${route}?role=${identity}&scenario=${state}`;
+          });
+          const doc = frame.contentDocument;
+          await new Promise((resolve, reject) => {
+            function ready() {
+              return doc?.querySelector('h1') && !doc.querySelector('.loading-panel');
+            }
+            if (ready()) {
+              resolve();
+              return;
+            }
+            const timeout = setTimeout(() => {
+              watcher.disconnect();
+              reject(new Error('A prévia não terminou de carregar.'));
+            }, 5000);
+            const watcher = new MutationObserver(() => {
+              if (ready()) {
+                clearTimeout(timeout);
+                watcher.disconnect();
+                resolve();
+              }
+            });
+            watcher.observe(doc, { childList: true, subtree: true });
+          });
+          await tick();
+          assert(
+            doc.documentElement.scrollWidth <= doc.documentElement.clientWidth,
+            `${route} em ${size}px alarga a página`
+          );
+          assert(
+            !!doc.querySelector('button[aria-label="Sair da conta"]'),
+            `${route}: ação de sair ausente`
+          );
+          results.push(`${size}px ${route}: sem overflow`);
+          regressionReport.textContent = results.join('\n');
+          return doc;
+        }
+        async function change(select, value) {
+          select.value = value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          await tick();
+        }
+        async function metricsReady(doc) {
+          await new Promise((resolve, reject) => {
+            function ready() {
+              return (
+                doc.querySelector('.metrics-context') &&
+                !doc.querySelector('.usage-metrics .loading-panel')
+              );
+            }
+            if (ready()) {
+              resolve();
+              return;
+            }
+            const timeout = setTimeout(() => {
+              watcher.disconnect();
+              reject(new Error('Métricas não terminaram de carregar.'));
+            }, 5000);
+            const watcher = new MutationObserver(() => {
+              if (ready()) {
+                clearTimeout(timeout);
+                watcher.disconnect();
+                resolve();
+              }
+            });
+            watcher.observe(doc, { childList: true, subtree: true });
+          });
+          await tick();
+        }
+        try {
+          for (const size of [375, 768, 1024]) {
+            for (const route of [
+              '/',
+              '/connect',
+              '/databases',
+              '/databases/new',
+              '/access',
+              '/audit'
+            ]) {
+              await open(route, size);
+            }
+          }
+          let doc = await open('/', 375);
+          assert(doc.querySelectorAll('.usage-kpi').length === 6, 'Indicadores de uso ausentes');
+          assert(doc.querySelector('.inventory-grid'), 'Inventário administrativo ausente');
+          doc.querySelectorAll('.period-picker button')[1].click();
+          await tick();
+          await metricsReady(doc);
+          assert(
+            doc.querySelectorAll('.metric-data-table tbody tr').length === 7,
+            'Período de 7 dias incorreto'
+          );
+          doc.querySelectorAll('.period-picker button')[2].click();
+          await tick();
+          await metricsReady(doc);
+          assert(
+            doc.querySelectorAll('.metric-data-table tbody tr').length === 30,
+            'Período de 30 dias incorreto'
+          );
+          assert(
+            !doc.querySelector('.chart-line').getAttribute('d').includes('NaN'),
+            'Geometria do gráfico inválida'
+          );
+          doc = await open('/', 375, 'member');
+          assert(
+            !doc.querySelector('.inventory-grid'),
+            'Inventário do workspace vazou para membro'
+          );
+          assert(
+            doc.querySelector('#usage-title').textContent.includes('Sua atividade'),
+            'Escopo pessoal não está explícito'
+          );
+          doc = await open('/', 375, 'member', 'empty');
+          assert(
+            doc.querySelectorAll('.usage-kpi strong')[1].textContent.trim() === '—',
+            'Sem atividade foi exibido como taxa de sucesso'
+          );
+          assert(
+            doc
+              .querySelector('.usage-metrics')
+              .textContent.includes('Nenhuma consulta neste período'),
+            'Métricas sem dados não têm orientação'
+          );
+          doc = await open('/', 375, 'admin', 'malformed');
+          assert(
+            doc
+              .querySelector('.usage-metrics [role="alert"]')
+              ?.textContent.includes('métricas inválidas'),
+            'Resposta inválida foi exibida como métricas'
+          );
+          assert(!doc.querySelector('.usage-kpi'), 'Dados inválidos renderizaram indicadores');
+          doc = await open('/databases', 375);
+          const search = doc.querySelector('input[aria-label="Buscar bancos"]');
+          search.value = 'not-found';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          await tick();
+          assert(
+            doc.body.textContent.includes('Nenhum banco encontrado'),
+            'Busca sem resultados não aparece'
+          );
+          const clear = [...doc.querySelectorAll('button')].find((button) =>
+            button.textContent.includes('Limpar filtros')
+          );
+          clear.click();
+          await tick();
+          assert(
+            doc.querySelector('.result-count').textContent === '3 de 3',
+            'Limpar filtros não restaura o catálogo'
+          );
+          doc.querySelector('button[aria-label^="Pausar "]').click();
+          await tick();
+          assert(doc.querySelector('dialog')?.open, 'Pausa sem confirmação modal');
+          doc.querySelector('dialog button').click();
+          await tick();
+          assert(!doc.querySelector('dialog'), 'Cancelar pausa não fecha o diálogo');
+          doc = await open('/databases/new', 375);
+          const selects = doc.querySelectorAll('form select');
+          await change(selects[1], 'disable');
+          assert(doc.body.textContent.includes('não será criptografada'), 'Aviso sem TLS ausente');
+          assert(!doc.querySelector('textarea'), 'CA continua disponível sem TLS');
+          await change(selects[2], 'mysql');
+          assert(
+            doc.querySelector('input[type="number"]').value === '3306',
+            'Porta MySQL não atualizada'
+          );
+          await change(selects[0], 'url');
+          assert(
+            doc.querySelectorAll('form input').length === 2,
+            'Modo URL mantém campos incompatíveis'
+          );
+          doc = await open('/connect', 375, 'member');
+          const choices = doc.querySelectorAll('.client-picker button');
+          choices[1].click();
+          await tick();
+          assert(
+            doc.querySelector('pre').textContent.includes('claude mcp add --transport http'),
+            'Comando Claude Code ausente'
+          );
+          choices[2].click();
+          await tick();
+          assert(
+            doc
+              .querySelector('.connection-details')
+              .textContent.includes('/.well-known/oauth-authorization-server'),
+            'Descoberta OAuth ausente'
+          );
+          assert(!doc.querySelector('nav a[href="/access"]'), 'Membro vê navegação administrativa');
+          doc = await open('/databases', 375, 'member');
+          assert(
+            doc.body.textContent.includes('restrito a administradores'),
+            'Rota administrativa sem orientação ao membro'
+          );
+          doc = await open('/', 375, 'member', 'empty');
+          assert(
+            doc.body.textContent.includes('Peça ao administrador'),
+            'Membro sem concessões não tem próximo passo'
+          );
+          doc = await open('/access', 375);
+          await change(doc.querySelectorAll('.grant-form select')[1], 'write');
+          assert(
+            doc.body.textContent.includes('INSERT, UPDATE e DELETE'),
+            'Explicação de escrita ausente'
+          );
+          doc.querySelector('button[aria-label^="Revogar acesso"]').click();
+          await tick();
+          assert(doc.querySelector('dialog')?.open, 'Revogação sem confirmação modal');
+          doc.querySelector('dialog button').click();
+          await tick();
+          assert(!doc.querySelector('dialog'), 'Cancelar revogação não fecha o diálogo');
+          doc = await open('/audit', 375);
+          await change(doc.querySelector('.filter-select select'), 'failure');
+          assert(
+            doc.querySelectorAll('tbody tr').length === 1 &&
+              doc.querySelector('tbody').textContent.includes('Falhou'),
+            'Filtro de auditoria incorreto'
+          );
+          doc = await open('/databases', 375, 'admin', 'empty');
+          assert(
+            doc.body.textContent.includes('Adicione seu primeiro banco'),
+            'Catálogo vazio sem orientação'
+          );
+          doc = await open('/audit', 375, 'admin', 'error');
+          assert(
+            !!doc.querySelector('[role="alert"]') &&
+              !doc.body.textContent.includes('As operações aparecerão aqui'),
+            'Falha exibida como auditoria vazia'
+          );
+          results.push(
+            `${passed} verificações aprovadas. Fixtures somente; sem gravações ou login real.`
+          );
+          regressionReport.textContent = results.join('\n');
+        } catch (cause) {
+          regressionReport.textContent = `${results.join('\n')}\nFALHOU: ${cause instanceof Error ? cause.message : 'Erro desconhecido'}`;
+        }
+      }
+      regression?.addEventListener('click', async () => {
+        if (regression instanceof HTMLButtonElement) {
+          regression.disabled = true;
+          try {
+            await runRegression();
+          } finally {
+            regression.disabled = false;
+          }
+        }
+      });
+      if (
+        frame instanceof HTMLIFrameElement &&
+        form instanceof HTMLFormElement &&
+        width instanceof HTMLSelectElement &&
+        route instanceof HTMLSelectElement &&
+        role instanceof HTMLSelectElement &&
+        scenario instanceof HTMLSelectElement
+      ) {
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          frame.width = width.value;
+          frame.src = `${route.value}?role=${role.value}&scenario=${scenario.value}`;
+        });
+        frame.addEventListener('load', () => {
+          observer?.disconnect();
+          const doc = frame.contentDocument;
+          let count = 0;
+          if (errors) {
+            errors.textContent = 'Erros de execução nesta prévia: 0';
+          }
+          frame.contentWindow?.addEventListener('error', () => {
+            count += 1;
+            if (errors) {
+              errors.textContent = `Erros de execução nesta prévia: ${count}`;
+            }
+          });
+          frame.contentWindow?.addEventListener('unhandledrejection', () => {
+            count += 1;
+            if (errors) {
+              errors.textContent = `Erros de execução nesta prévia: ${count}`;
+            }
+          });
+          function measure() {
+            if (doc && measurement) {
+              const viewport = doc.documentElement.clientWidth;
+              const content = doc.documentElement.scrollWidth;
+              measurement.textContent = `Viewport: ${viewport}px. Conteúdo: ${content}px. ${content > viewport ? 'Há overflow horizontal da página.' : 'Sem overflow horizontal da página.'}`;
+              if (overflowElements) {
+                const offenders = [];
+                for (const element of doc.querySelectorAll('body *')) {
+                  if (
+                    element.closest('.table-scroll, nav') ||
+                    element.classList.contains('sr-only') ||
+                    element.classList.contains('skip-link')
+                  ) {
+                    continue;
+                  }
+                  const rect = element.getBoundingClientRect();
+                  if (rect.right > viewport + 1 && rect.width > 0) {
+                    offenders.push(
+                      `${element.tagName.toLowerCase()}.${element.getAttribute('class') ?? ''}: ${Math.round(rect.right)}px`
+                    );
+                  }
+                }
+                overflowElements.textContent = offenders.length
+                  ? `Elementos fora da viewport: ${offenders.slice(0, 8).join('; ')}`
+                  : '';
+              }
+            }
+          }
+          if (doc) {
+            observer = new MutationObserver(measure);
+            observer.observe(doc, { subtree: true, childList: true, attributes: true });
+            measure();
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -171,6 +171,24 @@ Deployment is environment-specific: the examples do not create the control datab
 
 The OpenTofu examples are starting points, not validated production modules. Their operator-editable `locals.auto.tf` files are copied from ignored example templates. Review IAM, networking, database connection budgets, costs, and the complete plan before you choose to apply anything. This repository has not deployed these examples to an AWS account.
 
+## Usage metrics
+
+The overview includes audit-backed query counts, read/write volume, success rate,
+failures, access denials, successful-operation average/p95 latency, time-series
+activity, and database/error rankings. Choose the last 24 hours, 7 days, or 30 days;
+the interval table provides exact values behind the chart.
+
+`GET /v1/metrics?period=24h` uses the existing bearer authentication and returns
+workspace metrics for administrators or personal metrics for members. Scope and
+identity cannot be selected by query parameters. Admin-only inventory counts show
+the current configuration separately: banks, members, effective grants, active
+connections without TLS, and members without an active-bank grant.
+
+Only recorded read/write query attempts count (including read-based schema
+inspection), not all MCP/HTTP messages. Audit capture is best-effort. Timings
+include gateway/Vault/lease cleanup, not just SQL execution; empty periods never
+claim a 100% success rate. See [metric definitions and API boundaries](docs/design/usage-metrics.md).
+
 ## Security model
 
 - OIDC identity is validated using provider discovery and JWKS. Platform administrator bootstrap matches exact OIDC subjects.
@@ -206,3 +224,9 @@ cd apps/admin && pnpm check && pnpm test && pnpm lint && pnpm build
 To opt in, run `make test-integration` from the repository root. The script generates test-only credentials and local TLS files under `/tmp/opencode`, binds service ports to loopback, uses fixed image versions from `compose.integration.yaml`, checks real database/OIDC behavior, and removes its uniquely named containers, test volumes, and temporary credentials when it finishes. It does not use `.env` or connect to external databases.
 
 Each run performs two passes. Besides real dynamic database leases, it runs the actual gateway binary against Keycloak discovery/JWKS, browser authorization-code/PKCE, signed-token/userinfo validation, consent, code reuse, token rotation/replay/revocation (including concurrent refresh), PostgreSQL grants, Origin checks, session isolation/expiry/admission/termination, POST/GET SSE, and a real stdio subprocess with no operator configuration. The temporary Keycloak realm's wildcard callback and loopback cookie policy are test-only and must not be copied to a deployment.
+
+The same isolated suite checks metrics against real PostgreSQL: more than 100
+records, exact period boundaries, zero-filled series, successful-only p95/average,
+inventory, member isolation, revoked-target visibility, authenticated routes,
+invalid parameters, and role downgrade. The separate UI fixture preview is documented
+in `apps/admin/tests/visual/README.md` and never proves real traffic or authentication.

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { apiFetch, waitForSession } from '$lib/session.svelte';
+  import { apiFetch, session, waitForSession } from '$lib/session.svelte';
   import { accessLevelLabel } from '$lib/presentation';
+  import Icon from '$lib/components/Icon.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import type { AccessLevel, DatabaseGrant, DatabaseTarget, Principal } from '$lib/types';
 
   let principals = $state<Principal[]>([]);
@@ -11,201 +13,287 @@
   let selectedDatabaseId = $state('');
   let accessLevel = $state<AccessLevel>('read');
   let loading = $state(true);
+  let grantsLoading = $state(false);
   let saving = $state(false);
   let error = $state<string | undefined>();
+  let grantError = $state<string | undefined>();
+  let actionError = $state<string | undefined>();
   let success = $state<string | undefined>();
+  let dialog = $state<
+    { type: 'none' } | { type: 'revoke'; grant: DatabaseGrant; principalId: string }
+  >({ type: 'none' });
+  let selectedPerson = $derived(
+    principals.find((principal) => principal.id === selectedPrincipalId)
+  );
+  let selectedTarget = $derived(targets.find((target) => target.id === selectedDatabaseId));
+  let existingGrant = $derived(grants.find((grant) => grant.database_id === selectedDatabaseId));
+  let grantRequest = 0;
 
   onMount(() => {
     void loadPage();
   });
-
   async function loadPage(): Promise<void> {
+    loading = true;
+    error = undefined;
     await waitForSession();
+    if (session.currentPrincipal?.platform_role !== 'admin') {
+      loading = false;
+      return;
+    }
     try {
       const [principalResponse, targetResponse] = await Promise.all([
         apiFetch('/v1/admin/principals'),
         apiFetch('/v1/admin/database-targets')
       ]);
-      principals = (await principalResponse.json()) as Principal[];
-      targets = ((await targetResponse.json()) as DatabaseTarget[]).filter(
-        (target) => target.enabled
-      );
+      principals = await principalResponse.json();
+      const allTargets: DatabaseTarget[] = await targetResponse.json();
+      targets = allTargets.filter((target) => target.enabled);
       selectedPrincipalId = principals[0]?.id ?? '';
       selectedDatabaseId = targets[0]?.id ?? '';
       await loadGrants();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Não foi possível carregar os acessos.';
+      error =
+        cause instanceof Error ? cause.message : 'Não foi possível carregar pessoas e bancos.';
     } finally {
       loading = false;
     }
   }
-
   async function loadGrants(): Promise<void> {
-    if (!selectedPrincipalId) {
-      grants = [];
+    const request = ++grantRequest;
+    const principalId = selectedPrincipalId;
+    grants = [];
+    grantError = undefined;
+    if (!principalId) {
       return;
     }
-    const response = await apiFetch(`/v1/admin/principals/${selectedPrincipalId}/database-grants`);
-    grants = (await response.json()) as DatabaseGrant[];
+    grantsLoading = true;
+    try {
+      const response = await apiFetch(`/v1/admin/principals/${principalId}/database-grants`);
+      const result: DatabaseGrant[] = await response.json();
+      if (request === grantRequest) {
+        grants = result;
+      }
+    } catch (cause) {
+      if (request === grantRequest) {
+        grantError =
+          cause instanceof Error ? cause.message : 'Não foi possível carregar as permissões.';
+      }
+    } finally {
+      if (request === grantRequest) {
+        grantsLoading = false;
+      }
+    }
   }
-
-  async function changePrincipal(event: Event): Promise<void> {
-    selectedPrincipalId = (event.currentTarget as HTMLSelectElement).value;
-    error = undefined;
+  async function changePrincipal(): Promise<void> {
+    success = undefined;
+    actionError = undefined;
+    accessLevel = 'read';
     await loadGrants();
   }
-
   async function setGrant(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    error = undefined;
+    if (!selectedPrincipalId || !selectedDatabaseId || saving || grantsLoading || grantError) {
+      return;
+    }
+    actionError = undefined;
     success = undefined;
     saving = true;
     try {
       await apiFetch(
         `/v1/admin/principals/${selectedPrincipalId}/database-grants/${selectedDatabaseId}`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({ access_level: accessLevel })
-        }
+        { method: 'PUT', body: JSON.stringify({ access_level: accessLevel }) }
       );
+      success = `Acesso a ${selectedTarget?.name ?? 'banco'} atualizado: ${accessLevelLabel(accessLevel).toLocaleLowerCase('pt-BR')}. Válido na próxima operação MCP.`;
       await loadGrants();
-      success = 'Concessão atualizada. Ela passa a valer na próxima operação MCP.';
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Não foi possível atualizar a concessão.';
+      actionError = cause instanceof Error ? cause.message : 'Não foi possível salvar a permissão.';
     } finally {
       saving = false;
     }
   }
-
-  async function revoke(grant: DatabaseGrant): Promise<void> {
-    error = undefined;
+  async function revoke(grant: DatabaseGrant, principalId: string): Promise<void> {
+    actionError = undefined;
     success = undefined;
+    saving = true;
     try {
-      await apiFetch(
-        `/v1/admin/principals/${selectedPrincipalId}/database-grants/${grant.database_id}`,
-        {
-          method: 'DELETE'
-        }
-      );
-      await loadGrants();
+      await apiFetch(`/v1/admin/principals/${principalId}/database-grants/${grant.database_id}`, {
+        method: 'DELETE'
+      });
       success = `Acesso a ${grant.database_name} revogado.`;
+      dialog = { type: 'none' };
+      await loadGrants();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Não foi possível revogar o acesso.';
+      actionError =
+        cause instanceof Error ? cause.message : 'Não foi possível revogar a permissão.';
+    } finally {
+      saving = false;
     }
   }
 </script>
 
-<svelte:head><title>Acessos · SQL MCP Gateway</title></svelte:head>
-
+<svelte:head><title>Pessoas e acessos · SQL MCP Gateway</title></svelte:head>
 <div class="page-heading">
   <div>
-    <p class="eyebrow">POLÍTICA POR IDENTIDADE</p>
-    <h1>Acessos<span class="heading-period">.</span></h1>
-    <p class="page-lede">Conceda o mínimo necessário, por pessoa e por banco.</p>
+    <h1>Pessoas e acessos</h1>
+    <p class="page-lede">A pessoa certa. O banco certo. Apenas a permissão necessária.</p>
   </div>
 </div>
-
-{#if error}<p class="notice notice-error" role="alert">{error}</p>{/if}
-{#if success}<p class="notice notice-success" role="status">{success}</p>{/if}
-
-{#if loading}
-  <div class="loading-panel">Carregando identidades e alvos…</div>
+{#if loading}<div class="loading-panel" role="status">Carregando pessoas e permissões…</div>
+{:else if session.currentPrincipal?.platform_role !== 'admin'}<div class="notice">
+    A gestão de permissões é restrita a administradores. <a class="text-link" href="/"
+      >Ver meus acessos</a
+    >
+  </div>
+{:else if error}<div class="notice notice-error" role="alert">
+    <p>{error}</p>
+    <button class="button button-secondary" onclick={loadPage}>Tentar novamente</button>
+  </div>
+{:else if principals.length === 0}<section class="panel empty-state">
+    <Icon name="users" size={34} />
+    <h2>Convide a equipe a entrar</h2>
+    <p>
+      As pessoas aparecem aqui após o primeiro login com SSO. Depois você poderá conceder acesso por
+      banco.
+    </p>
+  </section>
 {:else}
+  {#if success}<p class="notice notice-success" role="status">{success}</p>{/if}
+  {#if actionError && dialog.type === 'none'}<p class="notice notice-error" role="alert">
+      {actionError}
+    </p>{/if}
   <section class="access-workspace">
-    <div class="access-sidebar panel">
-      <p class="eyebrow">IDENTIDADE</p>
+    <aside class="panel access-sidebar">
+      <h2>Escolha uma pessoa</h2>
       <label class="select-label"
-        >Pessoa
-        <select value={selectedPrincipalId} onchange={changePrincipal}>
-          {#each principals as principal}
-            <option value={principal.id}
-              >{principal.display_name ??
-                principal.email ??
-                principal.subject}{principal.platform_role === 'admin' ? ' · admin' : ''}</option
-            >
-          {/each}
-        </select>
-      </label>
-      {#if principals.length === 0}<div class="empty-inline">
-          Ninguém entrou pelo SSO ainda.
+        >Pessoa<select bind:value={selectedPrincipalId} onchange={changePrincipal} disabled={saving}
+          >{#each principals as principal}<option value={principal.id}
+              >{principal.display_name ?? principal.email ?? principal.subject}{!principal.enabled
+                ? ' (desabilitado)'
+                : ''}</option
+            >{/each}</select
+        ></label
+      >{#if selectedPerson}<div class="person-profile">
+          <div class="avatar avatar-large">
+            {(selectedPerson.display_name ?? selectedPerson.email ?? selectedPerson.subject)
+              .slice(0, 1)
+              .toUpperCase()}
+          </div>
+          <h3>{selectedPerson.display_name ?? selectedPerson.email ?? selectedPerson.subject}</h3>
+          {#if selectedPerson.email}<p>{selectedPerson.email}</p>{/if}<span class="badge"
+            >{selectedPerson.platform_role === 'admin' ? 'Administrador' : 'Membro'}</span
+          >{#if !selectedPerson.enabled}<p class="notice notice-warning">
+              Esta identidade está desabilitada.
+            </p>{/if}
         </div>{/if}
       <p class="microcopy">
-        A identidade é a combinação exata do emissor OIDC e do subject — não do endereço de e-mail.
+        A conta é identificada pelo provedor de login e pelo identificador individual, não apenas
+        pelo e-mail.
       </p>
-    </div>
-
-    <div class="access-main panel">
+    </aside>
+    <div class="panel access-main">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">CONCESSÕES EXPLÍCITAS</p>
           <h2>Permissões de banco</h2>
+          <p class="section-description">
+            Acesso individual de {selectedPerson?.display_name ??
+              selectedPerson?.email ??
+              'esta pessoa'}.
+          </p>
         </div>
-        <span class="count-pill">{grants.length.toString().padStart(2, '0')}</span>
+        <span class="count-pill">{grants.length}</span>
       </div>
-
-      {#if grants.length === 0}
-        <div class="empty-state compact-empty">
-          <div class="empty-mark">⊞</div>
-          <strong>Nenhum acesso concedido</strong>
-          <p>Essa pessoa não consegue enumerar nem consultar bancos.</p>
+      {#if grantsLoading}<div class="loading-panel" role="status">Carregando permissões…</div>
+      {:else if grantError}<div class="notice notice-error" role="alert">
+          <p>{grantError}</p>
+          <button class="button button-secondary" onclick={loadGrants}>Tentar novamente</button>
         </div>
-      {:else}
-        <div class="grant-list">
-          {#each grants as grant}
-            <div class="grant-row">
-              <div class="grant-database">
-                <span class="engine-mark">DB</span>
-                <div>
-                  <strong>{grant.database_name}</strong><span
-                    >Concedido em {new Date(grant.granted_at ?? '').toLocaleDateString(
-                      'pt-BR'
-                    )}</span
-                  >
-                </div>
+      {:else if grants.length === 0}<div class="empty-state compact-empty">
+          <Icon name="shield" size={28} />
+          <h3>Nenhum acesso concedido</h3>
+          <p>Use o formulário abaixo para liberar o primeiro banco a esta pessoa.</p>
+        </div>
+      {:else}<div class="grant-list">
+          {#each grants as grant}<div class="grant-row">
+              <span class="engine-mark"><Icon name="database" size={18} /></span>
+              <div class="target-description">
+                <strong>{grant.database_name}</strong><span
+                  >{grant.granted_at
+                    ? `Concedido em ${new Date(grant.granted_at).toLocaleDateString('pt-BR')}`
+                    : 'Permissão individual'}</span
+                >
               </div>
               <span class="badge" class:badge-write={grant.access_level === 'write'}
                 >{accessLevelLabel(grant.access_level)}</span
+              ><button
+                class="text-button text-danger"
+                disabled={saving}
+                aria-label={`Revogar acesso a ${grant.database_name}`}
+                onclick={() => {
+                  actionError = undefined;
+                  dialog = { type: 'revoke', grant, principalId: selectedPrincipalId };
+                }}>Revogar</button
               >
-              <button class="text-button text-danger" onclick={() => revoke(grant)}>Revogar</button>
+            </div>{/each}
+        </div>{/if}
+      {#if targets.length === 0}<div class="notice notice-warning">
+          <p>Cadastre ou ative um banco antes de conceder novos acessos.</p>
+          <a class="text-link" href="/databases"
+            >Ir para bancos de dados <Icon name="arrow" size={16} /></a
+          >
+        </div>
+      {:else}<form class="grant-form" onsubmit={setGrant}>
+          <h3>Conceder ou alterar acesso</h3>
+          <fieldset disabled={saving || grantsLoading || !!grantError || !selectedPerson?.enabled}>
+            <div class="form-row">
+              <label
+                >Banco<select bind:value={selectedDatabaseId} required
+                  >{#each targets as target}<option value={target.id}>{target.name}</option
+                    >{/each}</select
+                ></label
+              ><label
+                >Permissão<select bind:value={accessLevel}
+                  ><option value="read">Somente leitura</option><option value="write"
+                    >Leitura + escrita</option
+                  ></select
+                ></label
+              >
             </div>
-          {/each}
-        </div>
-      {/if}
-
-      <form class="grant-form" onsubmit={setGrant}>
-        <div>
-          <p class="eyebrow">NOVA CONCESSÃO</p>
-          <h3>Adicionar ou alterar acesso</h3>
-        </div>
-        <div class="form-row">
-          <label
-            >Banco
-            <select bind:value={selectedDatabaseId} required>
-              {#each targets as target}<option value={target.id}
-                  >{target.name} · {target.engine}</option
-                >{/each}
-            </select>
-          </label>
-          <label
-            >Nível
-            <select bind:value={accessLevel}
-              ><option value="read">Leitura</option><option value="write"
-                >Leitura e escrita (DML)</option
-              ></select
+            <div class="permission-explanation" class:permission-write={accessLevel === 'write'}>
+              <Icon name="shield" size={19} />
+              <p>
+                {accessLevel === 'read'
+                  ? 'Permite consultar dados. Não permite inserir, alterar ou excluir registros.'
+                  : 'Permite SELECT, INSERT, UPDATE e DELETE. Não permite alterar a estrutura nem administrar o banco.'}
+              </p>
+            </div>
+            {#if existingGrant}<p class="microcopy">
+                Permissão atual: {accessLevelLabel(existingGrant.access_level)}. Salvar substitui
+                esse nível.
+              </p>{/if}<button
+              class="button button-primary"
+              type="submit"
+              disabled={!selectedPrincipalId || !selectedDatabaseId}
+              >{saving ? 'Salvando…' : 'Salvar permissão'}<Icon name="check" size={17} /></button
             >
-          </label>
-        </div>
-        <button
-          class="button button-primary"
-          type="submit"
-          disabled={saving || !selectedPrincipalId || !selectedDatabaseId}
-        >
-          {saving ? 'Salvando…' : 'Aplicar concessão'}<span aria-hidden="true">→</span>
-        </button>
-        <p class="microcopy">
-          Escrita permite INSERT, UPDATE e DELETE. DDL e administração continuam bloqueados.
-        </p>
-      </form>
+          </fieldset>
+        </form>{/if}
     </div>
   </section>
+{/if}
+{#if dialog.type === 'revoke'}
+  {@const grant = dialog.grant}
+  {@const principalId = dialog.principalId}
+  <ConfirmDialog
+    title={`Revogar acesso a ${grant.database_name}?`}
+    description="A pessoa selecionada deixará de poder fazer novas operações MCP neste banco. Para liberar o acesso novamente, será necessário conceder uma nova permissão."
+    action="Revogar acesso"
+    busy={saving}
+    error={actionError}
+    oncancel={() => {
+      dialog = { type: 'none' };
+    }}
+    onconfirm={() => {
+      void revoke(grant, principalId);
+    }}
+  />
 {/if}

@@ -1273,6 +1273,7 @@ mod tests {
         if !schema_is_present {
             return Err("control-plane migration did not create the expected schema");
         }
+        crate::metrics::tests::verify_metrics_snapshot(&control_pool).await;
         control_pool.close().await;
         sqlx::query("DROP DATABASE sql_mcp_gateway_control_it")
             .execute(&root_pool)
