@@ -1,6 +1,6 @@
 /target/
 /apps/admin/node_modules/
-/apps/admin/.svelte-kit/
+**/.svelte-kit/
 /apps/admin/build/
 .env
 .env.*
