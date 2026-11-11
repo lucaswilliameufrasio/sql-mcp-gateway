@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import Icon from '$lib/components/Icon.svelte';
+  import WorkspaceSwitcher from '$lib/components/WorkspaceSwitcher.svelte';
+  import { environmentLabel, showsEnvironmentTag, switchUrl } from '$lib/workspaces';
   import {
     clearSessionError,
     initializeSession,
@@ -75,6 +77,29 @@
           que você precisa.
         </p>
       </div>
+      {#if session.workspaces}
+        {@const directory = session.workspaces}
+        <div class="login-workspace">
+          <span
+            >Você está entrando em <strong>{directory.current.name}</strong>
+            {#if showsEnvironmentTag(directory.current)}
+              <span class="environment-tag environment-{directory.current.environment}"
+                >{environmentLabel(directory.current.environment)}</span
+              >
+            {/if}</span
+          >
+          {#if directory.others.length > 0}
+            <span class="login-workspace-others"
+              >Ir para
+              {#each directory.others as workspace (workspace.slug)}
+                <a class="text-link" href={switchUrl(workspace, '/')} rel="external"
+                  >{workspace.name}</a
+                >
+              {/each}
+            </span>
+          {/if}
+        </div>
+      {/if}
       {#if session.sessionError || loginMessage}<p class="notice notice-error" role="alert">
           {loginMessage ?? session.sessionError}
         </p>{/if}
@@ -110,7 +135,10 @@
   </main>
 {:else}
   <a class="skip-link" href="#main-content">Pular para o conteúdo</a>
-  <div class="application-shell">
+  <div
+    class="application-shell"
+    class:shell-production={session.workspaces?.current.environment === 'production'}
+  >
     <aside class="sidebar">
       <a class="brand-lockup sidebar-brand" href="/" aria-label="SQL MCP Gateway — início"
         ><div class="brand-mark"><Icon name="database" size={23} /></div>
@@ -119,6 +147,9 @@
           <p class="brand-subtitle">Gateway</p>
         </div></a
       >
+      {#if session.workspaces}
+        <WorkspaceSwitcher directory={session.workspaces} pathname={page.url.pathname} />
+      {/if}
       <nav aria-label="Navegação principal">
         <p class="nav-group-label">Workspace</p>
         {#each navigation as item, index}
@@ -169,12 +200,24 @@
     <main class="main-panel" id="main-content" tabindex="-1">
       <header class="topbar">
         <div class="breadcrumbs">
-          <span>Workspace</span><Icon name="chevron" size={14} /><span>{currentPage}</span
-          >{#if page.url.pathname === '/databases/new'}<Icon name="chevron" size={14} /><span
-              >Novo banco</span
-            >{/if}
+          <span>{session.workspaces?.current.name ?? 'Workspace'}</span><Icon
+            name="chevron"
+            size={14}
+          /><span>{currentPage}</span>{#if page.url.pathname === '/databases/new'}<Icon
+              name="chevron"
+              size={14}
+            /><span>Novo banco</span>{/if}
         </div>
-        <span class="session-indicator"><Icon name="shield" size={15} /> Sessão autenticada</span>
+        <div class="topbar-status">
+          {#if session.workspaces?.current.environment}
+            <span
+              class="environment-tag environment-{session.workspaces.current.environment}"
+              title="Ambiente deste workspace"
+              >{environmentLabel(session.workspaces.current.environment)}</span
+            >
+          {/if}
+          <span class="session-indicator"><Icon name="shield" size={15} /> Sessão autenticada</span>
+        </div>
       </header>
       <div class="page-content">{@render children()}</div>
       <footer class="workspace-footer">

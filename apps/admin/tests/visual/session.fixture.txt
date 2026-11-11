@@ -1,9 +1,10 @@
 import { browser } from '$app/environment';
 import type { AuditEvent, AuthConfig, DatabaseGrant, DatabaseTarget, Principal } from '$lib/types';
 import { metricsFixture } from '../../tests/fixtures/metrics';
+import { workspaceDirectory, type WorkspaceDirectory } from '$lib/workspaces';
 
 // UI-only examples. Never evidence for real OIDC, SQL, Vault, or authorization.
-export const session = $state<{ currentPrincipal?: Principal; isInitializing: boolean; sessionError?: string }>({
+export const session = $state<{ currentPrincipal?: Principal; isInitializing: boolean; sessionError?: string; workspaces?: WorkspaceDirectory }>({
   currentPrincipal: undefined,
   isInitializing: true,
   sessionError: undefined
@@ -18,7 +19,7 @@ let targets: DatabaseTarget[] = [
   { id: 'demo-legacy', name: 'Legado · demonstração', engine: 'postgresql', host: 'legacy.example.test', port: 5432, database_name: 'legacy', schema_name: 'public', tls_mode: 'disable', enabled: false, created_at: '2026-11-05T10:00:00Z' }
 ];
 let grants: DatabaseGrant[] = [{ database_id: 'demo-analytics', database_name: 'Analytics · demonstração', access_level: 'read', granted_at: '2026-11-05T10:00:00Z' }];
-const config: AuthConfig = { issuer: 'https://identity.example.test', client_id: 'visual-fixture', resource: 'https://gateway.example.test/mcp', scopes: ['openid', 'mcp'], mcp_endpoint: 'https://gateway.example.test/mcp', oauth_authorization_metadata_url: 'https://gateway.example.test/.well-known/oauth-authorization-server' };
+const config: AuthConfig = { issuer: 'https://identity.example.test', client_id: 'visual-fixture', resource: 'https://gateway.example.test/mcp', scopes: ['openid', 'mcp'], mcp_endpoint: 'https://gateway.example.test/mcp', oauth_authorization_metadata_url: 'https://gateway.example.test/.well-known/oauth-authorization-server', current_workspace: 'prod', workspaces: [{ slug: 'dev', name: 'Desenvolvimento', environment: 'development', url: 'https://gateway-dev.example.test/' }, { slug: 'staging', name: 'Homologação', environment: 'staging', url: 'https://gateway-staging.example.test/' }, { slug: 'prod', name: 'Produção', environment: 'production', url: 'https://gateway.example.test/' }] };
 const events: AuditEvent[] = ['success', 'denied', 'failure'].map((outcome, index) => ({ id: `demo-${index}`, issuer: 'https://identity.example.test', subject: 'maria-demo', operation: index === 1 ? 'execute' : 'query', database_id: 'demo-analytics', outcome: outcome === 'denied' ? 'denied' : outcome === 'failure' ? 'failure' : 'success', duration_ms: 24, created_at: '2026-11-05T10:00:00Z' }));
 
 export async function initializeSession(): Promise<void> {
@@ -30,6 +31,8 @@ export async function initializeSession(): Promise<void> {
   scenario = params.get('scenario') ?? 'populated';
   const role = params.get('role') ?? 'admin';
   session.currentPrincipal = role === 'logged-out' ? undefined : role === 'member' ? member : admin;
+  const workspace = params.get('workspace') ?? 'prod';
+  session.workspaces = workspace === 'none' ? undefined : workspaceDirectory({ ...config, current_workspace: workspace });
   session.isInitializing = false;
   if (scenario === 'empty') {
     targets = [];
