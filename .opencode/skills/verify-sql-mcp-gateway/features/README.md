@@ -9,6 +9,7 @@ This map covers representative user-facing routes, not every interaction. Start 
 | Access and audit | `/access`, `/audit` | Administrator | Grant level is reflected in the grant list; a resulting event is visible in audit.        |
 | MCP onboarding | `/connect` | Any authenticated user | Select a client, copy configuration without tokens, and inspect OAuth/stdio guidance. |
 | Usage metrics | `/` | Administrator / member | Switch 24h/7d/30d; scope is workspace for admins, personal for members; inspect chart, p95, rankings, and current inventory. |
+| Workspace switcher | sidebar, sign-in screen | Any user | Current workspace and environment are shown; siblings link to the same page on their own origin; production marks the frame. Needs `WORKSPACE_SLUG`/`WORKSPACES`, or the fixture's `&workspace=` parameter. |
 
 Update this map when routes, controls, or permissions change.
 
