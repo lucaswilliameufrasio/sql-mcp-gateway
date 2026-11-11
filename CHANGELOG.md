@@ -2,6 +2,31 @@
 
 All notable changes to SQL MCP Gateway will be documented in this file.
 
+## [0.4.0] - 2026-11-11
+
+### Bug Fixes
+
+- *(release)* Upload only regular asset files
+
+
+### Chores
+
+- Ignore nested SvelteKit output
+
+
+### Documentation
+
+- Describe federated workspaces and the workspace commands
+
+
+### Features
+
+- *(gateway)* Advertise the deployment workspace and its siblings
+
+- *(cli)* Manage named workspaces with login, logout, workspaces, remove and stdio commands
+
+- *(admin)* Switch between workspaces and name MCP servers per workspace
+
 ## [0.3.0] - 2026-11-05
 
 ### Bug Fixes

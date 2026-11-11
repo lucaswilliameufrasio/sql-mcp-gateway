@@ -6,7 +6,7 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/lucaswilliameufrasio/sql-mcp-gateway"
-version = "0.3.0"
+version = "0.4.0"
 
 [profile.dist]
 inherits = "release"
