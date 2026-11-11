@@ -5,7 +5,7 @@ use url::Url;
 use vault_broker::VaultClient;
 use zeroize::Zeroizing;
 
-use crate::identity::OidcClient;
+use crate::{identity::OidcClient, workspace::WorkspaceDirectory};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -21,4 +21,5 @@ pub struct AppState {
     pub vault_runtime: Arc<VaultClient>,
     pub max_query_rows: usize,
     pub max_query_duration: Duration,
+    pub workspaces: Arc<Option<WorkspaceDirectory>>,
 }

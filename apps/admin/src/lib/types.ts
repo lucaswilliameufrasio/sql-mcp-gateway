@@ -64,4 +64,8 @@ export interface AuthConfig {
   scopes: string[];
   mcp_endpoint: string;
   oauth_authorization_metadata_url: string;
+  /** Slug of this deployment; absent when workspaces are not configured. */
+  current_workspace?: string;
+  /** Unvalidated wire entries; read them through `workspaceDirectory`. */
+  workspaces?: unknown[];
 }

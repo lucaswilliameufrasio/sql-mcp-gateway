@@ -13,6 +13,8 @@ Writes intentionally fail instead of pretending to persist changes.
 
 Open any route with `?role=admin`, `?role=member`, or `?role=logged-out`.
 Use `&scenario=empty` or `&scenario=error` for collection and failure states.
+Add `&workspace=dev`, `staging`, `prod` (default) or `none` to preview the
+workspace switcher as each deployment, or without workspaces.
 Reload when changing fixture identity/scenario. This is presentation evidence,
 not an integration or authorization test.
 

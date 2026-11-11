@@ -12,6 +12,7 @@ The gateway supports Streamable HTTP at `/mcp` (POST JSON/SSE, GET SSE and DELET
 | Deploy on a VPS, with or without an existing Caddy/Nginx           | [VPS deployment](docs/deployment/vps.md)                       |
 | Deploy the gateway on Amazon ECS Managed Instances                 | [ECS deployment](docs/deployment/ecs-managed-instances.md)     |
 | Deploy the gateway on Lambda with a private API and RDS PostgreSQL | [Lambda deployment](docs/deployment/lambda-web-adapter-rds.md) |
+| Operate several environments (dev, staging, production)            | [Workspaces](#several-environments-workspaces)                 |
 | Check production gates                                             | [Production readiness](docs/production-readiness.md)           |
 
 ## Local first run
@@ -126,7 +127,7 @@ curl -i http://127.0.0.1:8080/readyz
 
 #### 6. Connect an MCP client
 
-For remote MCP clients, use the HTTPS endpoint and let the client discover OAuth from the gateway. The **Conectar MCP** page in the admin UI provides copyable OpenCode V2 and Claude Code setup. OpenCode uses `mcp.servers` with `type: "remote"` and `url`; OAuth is enabled by default. Claude Code can be added with `claude mcp add --transport http <name> <MCP_PUBLIC_URL>/mcp`. Both clients open a browser to sign in; no bearer token belongs in their shared config. The gateway's OAuth access tokens represent the signed-in principal and do not change per-user/per-database grants.
+For remote MCP clients, use the HTTPS endpoint and let the client discover OAuth from the gateway. The **Conectar MCP** page in the admin UI provides copyable OpenCode V2 and Claude Code setup. OpenCode uses `mcp.servers` with `type: "remote"` and `url`; OAuth is enabled by default. Claude Code can be added with `claude mcp add --transport http <name> <MCP_PUBLIC_URL>/mcp`. When [workspaces](#several-environments-workspaces) are configured, the page names each server after its workspace. Both clients open a browser to sign in; no bearer token belongs in their shared config. The gateway's OAuth access tokens represent the signed-in principal and do not change per-user/per-database grants.
 
 The SQL MCP endpoint is:
 
@@ -144,22 +145,42 @@ GET accepts `text/event-stream` and opens a finite idle stream; the current tool
 
 JSON media types are case-insensitive and may include parameters (for example, `Application/JSON; charset=utf-8`). Clients must send the negotiated protocol-version header; for backwards compatibility, when it is absent the server uses the version stored in the authenticated session. Empty, malformed, duplicate, unsupported or session-mismatched version headers return HTTP 400 on POST, GET and DELETE.
 
-The alternative stdio mode now supports an assisted browser login and automatic refresh through the gateway OAuth broker:
+The alternative stdio mode signs in through the browser and refreshes automatically through the gateway OAuth broker. Every command takes an optional workspace (a saved name or a gateway URL) and opens a picker when you leave it out:
 
 ```sh
-cargo run -p sql-mcp-gateway -- --login "${MCP_PUBLIC_URL}"
-cargo run -p sql-mcp-gateway -- --stdio "${MCP_PUBLIC_URL}"
+sql-mcp-gateway login                 # first time: paste a gateway URL; later: pick a workspace
+sql-mcp-gateway login prod            # sign in to a saved workspace by name
+sql-mcp-gateway workspaces            # list workspaces and whether you are signed in
+sql-mcp-gateway stdio prod            # the command an MCP client runs
+sql-mcp-gateway logout                # sign out; `remove` also forgets the workspace
 ```
 
-Login stores the access and rotating refresh tokens in the operating system credential store, scoped to that gateway URL. Logout revokes the refresh-token family when the gateway is reachable and removes the local entry:
+Login stores the access and rotating refresh tokens in the operating system credential store, scoped to that gateway URL, and saves the workspace name and URL in `workspaces.json` under your user configuration directory (no secrets; `SQL_MCP_CONFIG_DIR` overrides the location). Logout revokes the refresh-token family when the gateway is reachable and removes the local credentials.
 
-```sh
-cargo run -p sql-mcp-gateway -- --logout "${MCP_PUBLIC_URL}"
-```
-
-The stdio process is now a **remote client**: it needs only the gateway URL and the logged-in user's keyring, not control-database, OIDC, Vault, or state-key configuration. `--stdio` without a URL reads `MCP_PUBLIC_URL` (including from local `.env`); it no longer starts a local query executor. Configure the MCP host command as `sql-mcp-gateway` with arguments `["--stdio", "https://gateway.example.test"]`. The gateway handles grants, leases and audit centrally. At EOF the bridge attempts DELETE to release its session. An expired session is reported to the host for reinitialization; tool calls are not replayed.
+The stdio process is a **remote client**: it needs only a workspace and the logged-in user's keyring, not control-database, OIDC, Vault, or state-key configuration. Configure the MCP host command as `sql-mcp-gateway` with arguments `["stdio", "prod"]` (or a gateway URL instead of a name). Without an argument it uses `MCP_PUBLIC_URL` when set (including from local `.env`), otherwise the only saved workspace; with several saved workspaces it fails and lists their names instead of guessing. It never prompts. The earlier `--stdio`, `--login` and `--logout <gateway-url>` flags keep working. The gateway handles grants, leases and audit centrally. At EOF the bridge attempts DELETE to release its session. An expired session is reported to the host for reinitialization; tool calls are not replayed.
 
 The credential store must be available and unlocked; the process fails closed rather than writing tokens to a plaintext file. `SQL_MCP_ACCESS_TOKEN` remains temporarily supported for existing installations, but is deprecated and does not refresh automatically. Login/refresh remain keyring-backed; operator secrets must not be copied to MCP host configuration.
+
+## Several environments (workspaces)
+
+Run one gateway per environment; each deployment is an isolated **workspace** with its own control database, identity configuration, Vault, grants and audit trail. To move between them without hunting for URLs, give every deployment the same list and tell each one which entry it is:
+
+```sh
+WORKSPACE_SLUG=prod
+WORKSPACES='[
+  {"slug":"dev","name":"Desenvolvimento","environment":"development","url":"https://sql-dev.example.com"},
+  {"slug":"staging","name":"Homologação","environment":"staging","url":"https://sql-staging.example.com"},
+  {"slug":"prod","name":"Produção","environment":"production","url":"https://sql.example.com"}
+]'
+```
+
+`slug` is lowercase letters, digits and hyphens; `name` and `environment` (`production`, `staging` or `development`) are optional; `url` is that gateway's public HTTPS origin. Both variables are optional but must be set together, and the entry selected by `WORKSPACE_SLUG` must use this deployment's `MCP_PUBLIC_URL`, otherwise the gateway refuses to start.
+
+- **Admin UI:** the sidebar shows the current workspace and switches to the same page of another one; production is marked in the frame. Each workspace still runs its own sign-in.
+- **MCP clients:** **Conectar MCP** names the server `sql-mcp-gateway-<slug>` and can generate the configuration for every workspace at once, so the environments do not overwrite each other in a client.
+- **Command line:** `sql-mcp-gateway login` against any one gateway offers to add the others after showing their addresses; afterwards use names (`login staging`, `stdio prod`) or the picker.
+
+The list is public to anyone who can reach the gateway and grants nothing by itself. See [ADR 0005](docs/adr/0005-federated-workspaces.md).
 
 ## Deploy
 

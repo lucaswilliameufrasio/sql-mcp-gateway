@@ -4,16 +4,56 @@
   import Icon from '$lib/components/Icon.svelte';
   import {
     claudeCodeCommand,
+    endpointList,
     openCodeConfig,
     shellArgument,
-    type ClientChoice
+    type ClientChoice,
+    type McpServer
   } from '$lib/client-setup';
   import type { AuthConfig } from '$lib/types';
+  import { mcpEndpoint, mcpServerName } from '$lib/workspaces';
 
   let config = $state<AuthConfig | undefined>();
   let loading = $state(true);
   let error = $state<string | undefined>();
   let client = $state<ClientChoice>({ type: 'opencode' });
+  let includeOthers = $state(false);
+  let directory = $derived(session.workspaces);
+  let serverName = $derived(mcpServerName(directory?.current));
+  let servers = $derived.by((): McpServer[] => {
+    if (!config) {
+      return [];
+    }
+    const own = { name: serverName, endpoint: config.mcp_endpoint };
+    if (!includeOthers || !directory) {
+      return [own];
+    }
+    return [
+      own,
+      ...directory.others.map((workspace) => ({
+        name: mcpServerName(workspace),
+        endpoint: mcpEndpoint(workspace)
+      }))
+    ];
+  });
+  let setupText = $derived(
+    client.type === 'opencode'
+      ? openCodeConfig(servers)
+      : client.type === 'claude-code'
+        ? claudeCodeCommand(servers)
+        : endpointList(servers)
+  );
+  // The command line saves a workspace under its slug at the first login.
+  let stdioLogin = $derived(
+    config ? `sql-mcp-gateway login ${shellArgument(new URL(config.mcp_endpoint).origin)}` : ''
+  );
+  let stdioCommand = $derived(
+    directory
+      ? `sql-mcp-gateway stdio ${directory.current.slug}`
+      : config
+        ? `sql-mcp-gateway stdio ${shellArgument(new URL(config.mcp_endpoint).origin)}`
+        : ''
+  );
   let feedback = $state<{ type: 'none' } | { type: 'copied'; label: string } | { type: 'failed' }>({
     type: 'none'
   });
@@ -101,6 +141,16 @@
           ></button
         >
       </div>
+      {#if directory && directory.others.length > 0}
+        <label class="scope-toggle">
+          <input type="checkbox" bind:checked={includeOthers} />
+          <span
+            >Incluir também
+            {directory.others.map((workspace) => workspace.name).join(', ')}
+            <small>Cada workspace entra com nome próprio e pede login separado.</small></span
+          >
+        </label>
+      {/if}
       <div class="setup-instructions" aria-live="polite">
         <div class="setup-step">
           <span class="step-marker">2</span>
@@ -129,17 +179,7 @@
                 : client.type === 'claude-code'
                   ? 'Terminal'
                   : 'Endpoint MCP'}</span
-            ><button
-              class="button button-code"
-              onclick={() =>
-                copy(
-                  client.type === 'opencode'
-                    ? openCodeConfig(connection.mcp_endpoint)
-                    : client.type === 'claude-code'
-                      ? claudeCodeCommand(connection.mcp_endpoint)
-                      : connection.mcp_endpoint,
-                  'Configuração'
-                )}
+            ><button class="button button-code" onclick={() => copy(setupText, 'Configuração')}
               ><Icon
                 name={feedback.type === 'copied' && feedback.label === 'Configuração'
                   ? 'check'
@@ -150,13 +190,7 @@
                 : 'Copiar'}</button
             >
           </div>
-          <pre><code
-              >{client.type === 'opencode'
-                ? openCodeConfig(connection.mcp_endpoint)
-                : client.type === 'claude-code'
-                  ? claudeCodeCommand(connection.mcp_endpoint)
-                  : connection.mcp_endpoint}</code
-            ></pre>
+          <pre><code>{setupText}</code></pre>
         </div>
         {#if client.type === 'other'}<dl class="connection-details">
             <div>
@@ -178,9 +212,9 @@
             <h2>Entre e faça sua primeira consulta</h2>
             <p>
               {client.type === 'opencode'
-                ? 'Abra /mcps no OpenCode e entre no servidor sql-mcp-gateway.'
+                ? `Abra /mcps no OpenCode e entre no servidor ${serverName}.`
                 : client.type === 'claude-code'
-                  ? 'Abra /mcp no Claude Code e conclua o login do servidor no navegador.'
+                  ? `Abra /mcp no Claude Code e conclua o login do servidor ${serverName} no navegador.`
                   : 'Inicie a conexão no cliente e conclua o login no navegador.'} Use a mesma conta deste
               painel.
             </p>
@@ -230,11 +264,7 @@
         <div class="code-toolbar">
           <span>1. Login no navegador</span><button
             class="button button-code"
-            onclick={() =>
-              copy(
-                `sql-mcp-gateway --login ${shellArgument(connection.mcp_endpoint)}`,
-                'Comando de login'
-              )}
+            onclick={() => copy(stdioLogin, 'Comando de login')}
             ><Icon
               name={feedback.type === 'copied' && feedback.label === 'Comando de login'
                 ? 'check'
@@ -246,17 +276,13 @@
               : 'Copiar login'}</button
           >
         </div>
-        <pre><code>sql-mcp-gateway --login {shellArgument(connection.mcp_endpoint)}</code></pre>
+        <pre><code>{stdioLogin}</code></pre>
       </div>
       <div class="code-block">
         <div class="code-toolbar">
           <span>2. Comando do subprocesso</span><button
             class="button button-code"
-            onclick={() =>
-              copy(
-                `sql-mcp-gateway --stdio ${shellArgument(connection.mcp_endpoint)}`,
-                'Comando stdio'
-              )}
+            onclick={() => copy(stdioCommand, 'Comando stdio')}
             ><Icon
               name={feedback.type === 'copied' && feedback.label === 'Comando stdio'
                 ? 'check'
@@ -268,12 +294,14 @@
               : 'Copiar stdio'}</button
           >
         </div>
-        <pre><code>sql-mcp-gateway --stdio {shellArgument(connection.mcp_endpoint)}</code></pre>
+        <pre><code>{stdioCommand}</code></pre>
       </div>
       <p class="microcopy">
-        Os tokens rotativos ficam no keyring do sistema, nunca em arquivo de configuração. Sem
-        keyring, o login falha. O subprocesso conecta ao gateway remoto; não exige Vault nem banco
-        local.
+        {#if directory && directory.others.length > 0}O login oferece adicionar os outros workspaces
+          de uma vez. Depois, <code>sql-mcp-gateway workspaces</code> lista todos e
+          <code>sql-mcp-gateway login</code> abre um seletor.{/if}
+        Os tokens rotativos ficam no keyring do sistema, nunca em arquivo de configuração. Sem keyring,
+        o login falha. O subprocesso conecta ao gateway remoto; não exige Vault nem banco local.
       </p>
     </div>
   </details>

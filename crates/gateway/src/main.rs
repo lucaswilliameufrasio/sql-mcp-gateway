@@ -1,6 +1,7 @@
 mod api_error;
 mod audit;
 mod auth;
+mod cli;
 mod config;
 mod domain;
 mod handlers;
@@ -13,13 +14,16 @@ mod sql_access;
 mod state;
 mod stdio;
 mod stdio_auth;
+mod workspace;
+mod workspace_store;
 
-use std::{sync::Arc, time::Duration};
+use std::{process::ExitCode, sync::Arc, time::Duration};
 
 use axum::{
     Router, middleware,
     routing::{get, post},
 };
+use clap::Parser;
 use config::{ConfigError, Settings};
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
@@ -43,51 +47,44 @@ enum StartupError {
     ListenerBind,
     #[error("the HTTP server stopped unexpectedly")]
     Server,
-    #[error("unknown command line option")]
-    InvalidArgument,
     #[error(transparent)]
-    StdioOAuth(#[from] stdio_auth::StdioAuthError),
-}
-
-enum Command {
-    Http,
-    Stdio(String),
-    Login(String),
-    Logout(String),
+    Client(#[from] cli::CliError),
 }
 
 #[tokio::main]
-async fn main() -> Result<(), StartupError> {
+async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
+    let command = cli::Cli::parse().into_command();
     initialize_tracing();
 
-    let command = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [] => Command::Http,
-        [argument] if argument == "--stdio" => Command::Stdio(
-            std::env::var("MCP_PUBLIC_URL").map_err(|_| StartupError::InvalidArgument)?,
-        ),
-        [argument, server] if argument == "--stdio" => Command::Stdio(server.clone()),
-        [argument, server] if argument == "--login" => Command::Login(server.clone()),
-        [argument, server] if argument == "--logout" => Command::Logout(server.clone()),
-        _ => return Err(StartupError::InvalidArgument),
-    };
-
-    match &command {
-        Command::Login(server) => {
-            return stdio_auth::login(server).await.map_err(StartupError::from);
+    match run(command).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(StartupError::Client(cli::CliError::Cancelled)) => ExitCode::from(130),
+        Err(error) => {
+            eprintln!("error: {error}");
+            if matches!(error, StartupError::Configuration(_)) {
+                eprintln!(
+                    "This starts the gateway server. To use a gateway instead, run `sql-mcp-gateway login`; see `sql-mcp-gateway --help`."
+                );
+            }
+            ExitCode::FAILURE
         }
-        Command::Logout(server) => {
-            return stdio_auth::logout(server).await.map_err(StartupError::from);
-        }
-        Command::Stdio(server) => {
-            return stdio::run(server).await.map_err(StartupError::from);
-        }
-        Command::Http => {}
     }
+}
 
-    let settings = Settings::from_environment()?;
-    let state = create_state(settings).await?;
-    serve_http(state).await
+async fn run(command: cli::Command) -> Result<(), StartupError> {
+    match command {
+        cli::Command::Login(workspace) => Ok(cli::login(workspace).await?),
+        cli::Command::Logout(workspace) => Ok(cli::logout(workspace).await?),
+        cli::Command::Workspaces => Ok(cli::workspaces().await?),
+        cli::Command::Remove(workspace) => Ok(cli::remove(workspace).await?),
+        cli::Command::Stdio(workspace) => Ok(cli::stdio(workspace).await?),
+        cli::Command::Serve => {
+            let settings = Settings::from_environment()?;
+            let state = create_state(settings).await?;
+            serve_http(state).await
+        }
+    }
 }
 
 async fn create_state(settings: Settings) -> Result<AppState, StartupError> {
@@ -127,6 +124,7 @@ async fn create_state(settings: Settings) -> Result<AppState, StartupError> {
         vault_runtime: Arc::new(vault_runtime),
         max_query_rows: settings.max_query_rows,
         max_query_duration: settings.max_query_duration,
+        workspaces: Arc::new(settings.workspaces),
     })
 }
 

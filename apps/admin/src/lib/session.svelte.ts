@@ -2,11 +2,13 @@ import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import { UserManager, WebStorageStateStore, type User } from 'oidc-client-ts';
 import type { AuthConfig, MeResponse, Principal } from './types';
+import { workspaceDirectory, type WorkspaceDirectory } from './workspaces';
 
 export const session = $state({
   accessToken: undefined as string | undefined,
   currentPrincipal: undefined as Principal | undefined,
   isInitializing: true,
+  workspaces: undefined as WorkspaceDirectory | undefined,
   sessionError: undefined as string | undefined
 });
 
@@ -53,6 +55,7 @@ async function initialize(): Promise<void> {
       throw new Error('Não foi possível carregar a configuração de identidade.');
     }
     const config = (await response.json()) as AuthConfig;
+    session.workspaces = workspaceDirectory(config);
     manager = new UserManager({
       authority: config.issuer,
       client_id: config.client_id,
