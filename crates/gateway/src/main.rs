@@ -13,6 +13,7 @@ mod sql_access;
 mod state;
 mod stdio;
 mod stdio_auth;
+mod workspace;
 
 use std::{sync::Arc, time::Duration};
 
@@ -127,6 +128,7 @@ async fn create_state(settings: Settings) -> Result<AppState, StartupError> {
         vault_runtime: Arc::new(vault_runtime),
         max_query_rows: settings.max_query_rows,
         max_query_duration: settings.max_query_duration,
+        workspaces: Arc::new(settings.workspaces),
     })
 }
 

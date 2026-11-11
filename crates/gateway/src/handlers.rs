@@ -23,6 +23,7 @@ use crate::{
         Principal,
     },
     state::AppState,
+    workspace::Workspace,
 };
 
 #[derive(Serialize)]
@@ -33,9 +34,16 @@ pub struct AuthConfigResponse {
     pub scopes: [&'static str; 3],
     pub mcp_endpoint: String,
     pub oauth_authorization_metadata_url: String,
+    /// Slug of this deployment; absent when workspaces are not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_workspace: Option<String>,
+    /// This deployment and its advertised siblings, in configured order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<Workspace>,
 }
 
 pub async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigResponse> {
+    let directory = state.workspaces.as_ref().as_ref();
     Json(AuthConfigResponse {
         issuer: state.oidc.issuer().to_owned(),
         client_id: state.oidc_client_id.to_string(),
@@ -51,6 +59,10 @@ pub async fn auth_config(State(state): State<AppState>) -> Json<AuthConfigRespon
             .join(".well-known/oauth-authorization-server")
             .expect("configured MCP URL is valid")
             .to_string(),
+        current_workspace: directory.map(|directory| directory.current.clone()),
+        workspaces: directory
+            .map(|directory| directory.workspaces.clone())
+            .unwrap_or_default(),
     })
 }
 

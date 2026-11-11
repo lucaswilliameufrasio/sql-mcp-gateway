@@ -3,6 +3,8 @@ use std::{collections::HashSet, net::SocketAddr, time::Duration};
 use url::Url;
 use zeroize::Zeroizing;
 
+use crate::workspace::{WorkspaceConfigError, WorkspaceDirectory};
+
 #[derive(Clone)]
 pub struct Settings {
     pub bind_address: SocketAddr,
@@ -18,6 +20,7 @@ pub struct Settings {
     pub vault_runtime_token: Zeroizing<String>,
     pub max_query_rows: usize,
     pub max_query_duration: Duration,
+    pub workspaces: Option<WorkspaceDirectory>,
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -48,6 +51,27 @@ pub enum ConfigError {
     InvalidMaxQueryRows,
     #[error("MAX_QUERY_DURATION_SECONDS must be between 1 and 300")]
     InvalidMaxQueryDuration,
+    #[error("WORKSPACE_SLUG and WORKSPACES must be set together")]
+    IncompleteWorkspaces,
+    #[error(
+        "WORKSPACES must be a JSON list of up to 16 workspaces with unique slugs and HTTPS origins"
+    )]
+    InvalidWorkspaces,
+    #[error("WORKSPACE_SLUG must match the slug of one WORKSPACES entry")]
+    UnknownWorkspaceSlug,
+    #[error("the WORKSPACES entry selected by WORKSPACE_SLUG must use the MCP_PUBLIC_URL origin")]
+    WorkspaceUrlMismatch,
+}
+
+impl From<WorkspaceConfigError> for ConfigError {
+    fn from(error: WorkspaceConfigError) -> Self {
+        match error {
+            WorkspaceConfigError::Incomplete => Self::IncompleteWorkspaces,
+            WorkspaceConfigError::InvalidList => Self::InvalidWorkspaces,
+            WorkspaceConfigError::UnknownCurrent => Self::UnknownWorkspaceSlug,
+            WorkspaceConfigError::CurrentUrlMismatch => Self::WorkspaceUrlMismatch,
+        }
+    }
 }
 
 impl Settings {
@@ -94,6 +118,11 @@ impl Settings {
         let max_query_duration_seconds =
             parse_bounded_number("MAX_QUERY_DURATION_SECONDS", 30, 1, 300)
                 .ok_or(ConfigError::InvalidMaxQueryDuration)?;
+        let workspaces = WorkspaceDirectory::from_settings(
+            required_environment("WORKSPACE_SLUG").as_deref(),
+            required_environment("WORKSPACES").as_deref(),
+            &mcp_public_url,
+        )?;
 
         Ok(Self {
             bind_address,
@@ -109,6 +138,7 @@ impl Settings {
             vault_runtime_token: Zeroizing::new(vault_runtime_token),
             max_query_rows,
             max_query_duration: Duration::from_secs(max_query_duration_seconds as u64),
+            workspaces,
         })
     }
 }
@@ -155,7 +185,7 @@ fn parse_http_url(name: &str, error: ConfigError) -> Result<Url, ConfigError> {
     Ok(url)
 }
 
-fn is_loopback_host(host: Option<&str>) -> bool {
+pub(crate) fn is_loopback_host(host: Option<&str>) -> bool {
     host.is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
             || host
