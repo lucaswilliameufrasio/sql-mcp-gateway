@@ -40,7 +40,7 @@ pub enum StdioAuthError {
     Discovery,
     #[error("the system credential store is unavailable")]
     CredentialStore,
-    #[error("no stored OAuth login; run sql-mcp-gateway --login <gateway-url>")]
+    #[error("not signed in to this workspace; run `sql-mcp-gateway login`")]
     NotLoggedIn,
     #[error("the OAuth login did not complete")]
     Login,
@@ -234,6 +234,21 @@ struct CallbackWaiter {
     cancellation: CancellationToken,
 }
 
+/// Whether renewable credentials for a gateway are stored on this machine.
+pub enum LoginStatus {
+    SignedIn,
+    SignedOut,
+    Unavailable,
+}
+
+pub async fn login_status(server: &Url) -> LoginStatus {
+    match CredentialStore::new(server).read().await {
+        Ok(_) => LoginStatus::SignedIn,
+        Err(StdioAuthError::NotLoggedIn) => LoginStatus::SignedOut,
+        Err(_) => LoginStatus::Unavailable,
+    }
+}
+
 pub async fn login(server_url: &str) -> Result<(), StdioAuthError> {
     let server = normalize_server_url(server_url)?;
     let store = CredentialStore::new(&server);
@@ -264,7 +279,6 @@ pub async fn login(server_url: &str) -> Result<(), StdioAuthError> {
             tracing::warn!("could not confirm revocation of the previous stdio OAuth login");
         }
     }
-    println!("OAuth login saved to the system credential store for this gateway.");
     Ok(())
 }
 
@@ -418,7 +432,7 @@ pub async fn logout(server_url: &str) -> Result<(), StdioAuthError> {
         Err(error) => return Err(error),
     }
     store.delete().await?;
-    println!("Local OAuth credentials removed.");
+    println!("Signed out; local credentials removed.");
     Ok(())
 }
 
@@ -545,7 +559,7 @@ fn endpoint(base: &Url, path: &str) -> Url {
         .expect("normalized OAuth server URL accepts relative endpoints")
 }
 
-fn oauth_http_client() -> Result<Client, StdioAuthError> {
+pub(crate) fn oauth_http_client() -> Result<Client, StdioAuthError> {
     Client::builder()
         .redirect(Policy::none())
         .timeout(Duration::from_secs(15))
@@ -553,7 +567,9 @@ fn oauth_http_client() -> Result<Client, StdioAuthError> {
         .map_err(|_| StdioAuthError::Discovery)
 }
 
-async fn bounded_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, ()> {
+pub(crate) async fn bounded_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, ()> {
     if !response.status().is_success()
         || response
             .content_length()
